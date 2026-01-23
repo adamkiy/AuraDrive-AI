@@ -79,6 +79,10 @@ class EyeBlinkSensor:
     # ==================================================
 
     def process_frame(self, frame):
+        # NEW: controller can poll this each frame
+    # NEW: controller can poll this each frame
+        self.last_risk_payload = None
+
         now_ms = time.time() * 1000
         h, w, _ = frame.shape
 
@@ -86,13 +90,15 @@ class EyeBlinkSensor:
         results = self.face_mesh.process(rgb)
 
         if not results.multi_face_landmarks:
-            return self._output(
+            out = self._output(
                 ear=None,
                 state="NO_FACE",
                 closed_ms=0,
                 blinks_per_min=0,
                 perclos=0.0
             )
+            # no risk payload when no face
+            return out
 
         landmarks = results.multi_face_landmarks[0].landmark
 
@@ -134,9 +140,9 @@ class EyeBlinkSensor:
 
         # ---------- SLEEP (ear_slow ONLY) ----------
         sleeping = (
-                self.eye_state == "CLOSED"
-                and closed_duration >= self.sleep_ms
-                and ear_slow < self.ear_close_thresh
+            self.eye_state == "CLOSED"
+            and closed_duration >= self.sleep_ms
+            and ear_slow < self.ear_close_thresh
         )
 
         if sleeping:
@@ -183,10 +189,10 @@ class EyeBlinkSensor:
             if state == "SLEEPING":
                 border_thickness = 15
                 cv2.rectangle(frame,
-                              (0, 0),
-                              (w - 1, h - 1),
-                              (0, 0, 255),  # Red color in BGR
-                              border_thickness)
+                            (0, 0),
+                            (w - 1, h - 1),
+                            (0, 0, 255),
+                            border_thickness)
 
                 cv2.putText(frame, "SLEEPING!", (w - 360, int(h / 2)),
                             cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 6)
@@ -194,13 +200,21 @@ class EyeBlinkSensor:
             # Draw EAR plot
             self._draw_ear_plot(frame, w, h)
 
-        return self._output(
+        # build the standard output (unchanged behavior)
+        out = self._output(
             ear=ear_fast,
             state=state,
             closed_ms=closed_duration,
             blinks_per_min=blinks_per_min,
             perclos=perclos
         )
+
+        # NEW: only when risk is detected, expose payload for controller -> agent
+        if state in ["EYES_CLOSED", "SLEEPING"] or perclos > 0.15:
+            self.last_risk_payload = out
+
+        return out
+
 
     # ==================================================
     # Helpers
@@ -260,7 +274,8 @@ class EyeBlinkSensor:
             "Blinks/min": data['blinks_per_min'],
             "PERCLOS": round(data['perclos'], 3)
         }
-        print(json.dumps(output))
+        #print(json.dumps(output))
+        return output
 
     def _draw_ear_plot(self, frame, w, h):
         """Draw real-time EAR plot with thresholds"""
