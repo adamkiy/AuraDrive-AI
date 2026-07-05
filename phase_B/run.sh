@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+#
+# AuraDrive (merged) — run / setup launcher
+# =========================================
+# Starts the system (python main.py) and, if needed, installs the Python
+# dependencies and makes sure a local Ollama server + model are ready.
+#
+# Usage:
+#   ./run.sh                 Run. Installs deps only if missing; ensures Ollama.
+#   ./run.sh --venv          Use/create an isolated .venv (recommended on a
+#                            fresh machine, e.g. the Jetson). Installs into it.
+#   ./run.sh --install       Force a (re)install of requirements before running.
+#   ./run.sh --setup         Do setup (deps + model pull) and EXIT without running.
+#   ./run.sh --skip-ollama   Do not manage Ollama (agent calls fall back to the
+#                            deterministic cold layer if Ollama is unavailable).
+#   ./run.sh --help          Show this help.
+#
+# Environment overrides (all optional):
+#   AURADRIVE_MODEL           primary model      (default llama3.2:1b)
+#   AURADRIVE_FALLBACK_MODEL  fallback model     (default llama3.2:latest)
+#   AURADRIVE_OLLAMA_URL      Ollama endpoint    (default http://localhost:11434)
+#   AURADRIVE_CAMERA_INDEX    camera index       (default 0)
+#   AURADRIVE_PYTHON          python interpreter (default: first python3 >= 3.10)
+#
+# Notes:
+#   * Requires Python 3.10+ (the perception layer uses `X | None` signatures).
+#   * The script only stops an Ollama server that IT started; an already-running
+#     server (e.g. the macOS app or a systemd service) is left untouched.
+#   * On a Jetson, MediaPipe/OpenCV may need JetPack-specific builds; if the pip
+#     install of mediapipe fails there, install the vendor wheel and re-run with
+#     --skip-ollama-style manual setup. On Apple Silicon the pip wheels work.
+#
+set -euo pipefail
+
+# ---------- defaults (override via environment) ----------
+MODEL="${AURADRIVE_MODEL:-llama3.2:1b}"
+FALLBACK_MODEL="${AURADRIVE_FALLBACK_MODEL:-llama3.2:latest}"
+OLLAMA_URL="${AURADRIVE_OLLAMA_URL:-http://localhost:11434}"
+CAMERA_INDEX="${AURADRIVE_CAMERA_INDEX:-0}"
+MIN_PY_MINOR=10            # require Python 3.10+
+
+USE_VENV=0
+FORCE_INSTALL=0
+SETUP_ONLY=0
+MANAGE_OLLAMA=1
+
+# ---------- helpers ----------
+log() { printf '[run] %s\n' "$*"; }
+err() { printf '[run][ERROR] %s\n' "$*" >&2; }
+
+show_help() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; }
+
+# ---------- arg parsing ----------
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --venv)         USE_VENV=1 ;;
+    --install)      FORCE_INSTALL=1 ;;
+    --setup)        SETUP_ONLY=1; FORCE_INSTALL=1 ;;
+    --skip-ollama)  MANAGE_OLLAMA=0 ;;
+    -h|--help)      show_help; exit 0 ;;
+    *)              err "Unknown option: $1 (try --help)"; exit 2 ;;
+  esac
+  shift
+done
+
+# ---------- work from the project directory ----------
+cd "$(dirname "$0")"
+[ -f main.py ] || { err "main.py not found next to this script."; exit 1; }
+[ -f requirements.txt ] || { err "requirements.txt not found."; exit 1; }
+
+# ---------- pick a Python interpreter (>= 3.10) ----------
+pick_python() {
+  local cand
+  for cand in "${AURADRIVE_PYTHON:-}" python3 python; do
+    [ -n "$cand" ] || continue
+    command -v "$cand" >/dev/null 2>&1 || continue
+    if "$cand" -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, $MIN_PY_MINOR) else 1)" 2>/dev/null; then
+      echo "$cand"; return 0
+    fi
+  done
+  return 1
+}
+BASE_PY="$(pick_python)" || {
+  err "Need Python 3.${MIN_PY_MINOR}+ on PATH (set AURADRIVE_PYTHON to point at one)."
+  exit 1
+}
+log "Using interpreter: $("$BASE_PY" -c 'import sys,shutil;print(shutil.which(sys.executable) or sys.executable, sys.version.split()[0])')"
+
+# ---------- virtual environment (optional) ----------
+if [ "$USE_VENV" -eq 1 ]; then
+  if [ ! -d .venv ]; then
+    log "Creating virtualenv .venv ..."
+    "$BASE_PY" -m venv .venv
+    FORCE_INSTALL=1
+  fi
+  PY=".venv/bin/python"
+  log "Using virtualenv .venv"
+else
+  PY="$BASE_PY"
+fi
+
+# ---------- Python dependencies ----------
+# Functional check: MediaPipe is notorious for "installed but broken" states
+# where `import mediapipe` succeeds yet `mp.solutions` is missing. A plain
+# presence check (find_spec) is NOT enough — we actually exercise the package.
+deps_ok() {
+  "$PY" - <<'PYEOF'
+import sys
+try:
+    import numpy            # noqa: F401
+    import cv2              # noqa: F401
+    import mediapipe as mp
+    _ = mp.solutions.face_mesh   # the line that breaks on a partial install
+except Exception as exc:
+    sys.stderr.write(f"[deps] functional import check failed: {type(exc).__name__}: {exc}\n")
+    sys.exit(1)
+sys.exit(0)
+PYEOF
+}
+
+_pip_install() {  # $@ -> extra pip flags
+  if ! "$PY" -m pip install "$@" -r requirements.txt; then
+    log "pip failed; retrying with --break-system-packages (PEP 668) ..."
+    "$PY" -m pip install --break-system-packages "$@" -r requirements.txt || true
+  fi
+}
+
+if [ "$FORCE_INSTALL" -eq 1 ] || ! deps_ok; then
+  log "Installing Python requirements ..."
+  "$PY" -m pip install --upgrade pip >/dev/null 2>&1 || true
+  _pip_install
+  if ! deps_ok; then
+    log "Still not functional (a broken in-place package is likely) — forcing a clean reinstall ..."
+    _pip_install --force-reinstall --no-cache-dir
+  fi
+  if ! deps_ok; then
+    err "MediaPipe/OpenCV are installed but NOT functional in this interpreter ('mp.solutions' missing)."
+    err "Most reliable fix: run in a clean virtualenv  ->  ./run.sh --venv"
+    err "If that still fails, this Python is likely arch-mismatched; use a Homebrew Python:"
+    err "  brew install python@3.11 && AURADRIVE_PYTHON=\$(brew --prefix)/bin/python3.11 ./run.sh --venv"
+    exit 1
+  fi
+  log "Dependencies functional."
+else
+  log "Python dependencies already present and functional."
+fi
+
+# ---------- Ollama lifecycle ----------
+OLLAMA_STARTED=0
+OLLAMA_PID=""
+cleanup() {
+  if [ "$OLLAMA_STARTED" -eq 1 ] && [ -n "$OLLAMA_PID" ]; then
+    log "Stopping the Ollama server this script started (pid $OLLAMA_PID) ..."
+    kill "$OLLAMA_PID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+ollama_up()      { ollama list >/dev/null 2>&1; }
+model_present()  { ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -Fxq "$1"; }
+
+if [ "$MANAGE_OLLAMA" -eq 1 ]; then
+  if ! command -v ollama >/dev/null 2>&1; then
+    err "Ollama is not installed — the LLM agent layer needs it."
+    err "Install from https://ollama.com/download, then re-run."
+    err "(Or re-run with --skip-ollama to exercise the deterministic cold layer only.)"
+    exit 1
+  fi
+
+  if ollama_up; then
+    log "Ollama server already running."
+  else
+    log "Starting 'ollama serve' in the background ..."
+    ollama serve >/tmp/auradrive_ollama.log 2>&1 &
+    OLLAMA_PID=$!
+    OLLAMA_STARTED=1
+    for _ in $(seq 1 30); do ollama_up && break; sleep 1; done
+    ollama_up || { err "Ollama did not become ready (see /tmp/auradrive_ollama.log)."; exit 1; }
+    log "Ollama server is up."
+  fi
+
+  if model_present "$MODEL" || model_present "$FALLBACK_MODEL"; then
+    log "Model available ($MODEL or $FALLBACK_MODEL)."
+  else
+    log "No model found; pulling '$MODEL' (one-time download, ~1.3 GB) ..."
+    ollama pull "$MODEL"
+  fi
+else
+  log "Skipping Ollama management (--skip-ollama)."
+  log "If Ollama is down, every agent call falls back to the cold layer (this is safe, just no LLM reasoning)."
+fi
+
+# ---------- export knobs so main.py AND the agent subprocess inherit them ----------
+export AURADRIVE_MODEL="$MODEL"
+export AURADRIVE_FALLBACK_MODEL="$FALLBACK_MODEL"
+export AURADRIVE_OLLAMA_URL="$OLLAMA_URL"
+export AURADRIVE_CAMERA_INDEX="$CAMERA_INDEX"
+
+# ---------- setup-only mode ----------
+if [ "$SETUP_ONLY" -eq 1 ]; then
+  log "Setup complete (--setup). Not launching."
+  exit 0
+fi
+
+# ---------- run ----------
+log "Launching AuraDrive (merged). Press 'q' in the video window to quit."
+set +e
+"$PY" main.py
+rc=$?
+set -e
+log "AuraDrive exited (code $rc)."
+exit $rc
