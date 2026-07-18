@@ -1,3 +1,4 @@
 __pycache__/
 *.pyc
 conversation_log.jsonl
+.DS_Store
