@@ -1,9 +1,6 @@
-# Batch files must keep CRLF: cmd.exe mishandles labels and goto in a .bat with
-# Unix line endings, and git would otherwise normalise them on checkout.
-*.bat text eol=crlf
-
-# Shell scripts and the macOS launcher must keep LF for the same reason in
-# reverse: a shebang followed by CR is not a valid interpreter path.
+# Shell scripts and the macOS launcher must keep LF: a shebang followed by a
+# carriage return is not a valid interpreter path, and Git Bash on Windows runs
+# these files too.
 *.sh       text eol=lf
 *.command  text eol=lf
 

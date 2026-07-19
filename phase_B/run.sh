@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# AuraDrive — launcher for macOS and Linux
+# AuraDrive — launcher
 # ========================================
 # Starts the system and, if needed, installs the Python dependencies and makes
-# sure a local Ollama server and model are ready. Windows users: run.bat.
+# sure a local Ollama server and model are ready.
 #
 # Layout this script assumes:
-#   phase_B/run.sh      this file
-#   phase_B/run.bat     the Windows equivalent
-#   phase_B/src/        the eleven modules and requirements.txt
+#   phase_B/run.sh            this file, the launcher for every platform
+#   phase_B/AuraDrive.command a macOS wrapper so Finder has something to open
+#   phase_B/src/              the eleven modules and requirements.txt
 #   phase_B/logs/       every JSONL log the run produces
 #   phase_B/.venv/      created by --venv
 #
@@ -104,17 +104,29 @@ log "Using interpreter: $("$BASE_PY" -c 'import sys,shutil;print(shutil.which(sy
 # flag was omitted would send pip at the system interpreter instead. --venv
 # therefore means "create one if it is missing", not "use the one that exists".
 # Setting AURADRIVE_PYTHON explicitly overrides this and wins.
+# A virtualenv puts its interpreter in bin/ on Unix and in Scripts/ on Windows.
+# Under Git Bash or WSL this script runs on Windows, so the layout is resolved
+# by looking rather than by assuming.
+venv_python() {
+  if [ -x "$1/bin/python" ]; then
+    echo "$1/bin/python"
+  elif [ -x "$1/Scripts/python.exe" ]; then
+    echo "$1/Scripts/python.exe"
+  fi
+}
+
 if [ -n "${AURADRIVE_PYTHON:-}" ]; then
   PY="$BASE_PY"
   log "Using the interpreter from AURADRIVE_PYTHON (ignoring any .venv)."
-elif [ -d "$ROOT/.venv" ]; then
-  PY="$ROOT/.venv/bin/python"
+elif [ -n "$(venv_python "$ROOT/.venv")" ]; then
+  PY="$(venv_python "$ROOT/.venv")"
   log "Using existing virtualenv $ROOT/.venv"
 elif [ "$USE_VENV" -eq 1 ]; then
   log "Creating virtualenv .venv ..."
   "$BASE_PY" -m venv "$ROOT/.venv"
   FORCE_INSTALL=1
-  PY="$ROOT/.venv/bin/python"
+  PY="$(venv_python "$ROOT/.venv")"
+  [ -n "$PY" ] || { err "Virtualenv created but no interpreter found inside it."; exit 1; }
   log "Using virtualenv $ROOT/.venv"
 else
   PY="$BASE_PY"

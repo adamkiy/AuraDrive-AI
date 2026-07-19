@@ -18,8 +18,7 @@ Team 26-1-D-10 · Adam Kayal & Maor Tzur · Supervisor: Mr. Ilya Zeldner
 phase_A/                 Phase A submission (initial prototype)
 phase_B/                 Phase B, the current system
 ├── AuraDrive.command    double-click launcher for macOS
-├── run.sh               command-line launcher for macOS and Linux
-├── run.bat              command-line launcher for Windows 10/11
+├── run.sh               the launcher, for macOS, Linux and Windows
 ├── src/                 the eleven modules and requirements.txt
 └── logs/sample/         recorded JSONL logs backing the measured results
 ```
@@ -30,12 +29,15 @@ Before anything else, install [Python 3.10 or newer](https://www.python.org/down
 and [Ollama](https://ollama.com/download), and make sure a camera is connected.
 Everything else is automatic.
 
-**Windows 10/11** — open the `phase_B` folder and double-click **run.bat**.
-
 **macOS** — open the `phase_B` folder and double-click **AuraDrive.command**.
 
-That is the whole procedure on either platform. A console window opens, and on
-a machine that has never run AuraDrive the launcher performs the first-time
+**Windows 10/11** — open Git Bash in the `phase_B` folder and run `./run.sh`.
+Git Bash comes with [Git for Windows](https://git-scm.com/download/win); it is
+what lets one launcher serve every platform. WSL works too.
+
+**Linux** — `./run.sh` from the `phase_B` folder.
+
+On a machine that has never run AuraDrive the launcher performs the first-time
 setup by itself: it creates an isolated Python environment, installs the
 dependencies, starts a local Ollama server if one is not already running, and
 downloads the reasoning model. That download is roughly 1.3 GB and happens only
@@ -43,8 +45,11 @@ once. Later launches skip all of it and start in seconds.
 
 Press `q` in the video window to end a session.
 
-If the window closes too quickly to read an error, run the launcher from a
-terminal instead, as shown further down, and the output stays on screen.
+There is one launcher rather than one per platform. `run.sh` resolves its own
+location, picks a suitable interpreter, and detects whether a virtualenv keeps
+its interpreter in `bin/` or in `Scripts/`, which is the difference between a
+Unix and a Windows environment. `AuraDrive.command` is a thin macOS wrapper
+around it so Finder has something to open, not a second implementation.
 
 ### Two things macOS will ask for
 
@@ -71,11 +76,11 @@ chmod +x ~/Desktop/AuraDrive-repo/phase_B/AuraDrive.command
 The shortcut repairs `run.sh` the same way on its own, so this only ever needs
 doing for the `.command` file itself.
 
-On **Windows**, a `.bat` from a downloaded ZIP may be blocked by SmartScreen.
-Right-click the file, choose Properties, tick **Unblock** at the bottom, and
-apply. A repository obtained with `git clone` is not blocked.
-
 ### Windows notes
+
+Run `./run.sh` from Git Bash rather than from `cmd.exe` or PowerShell, neither
+of which can execute a shell script. If `permission denied` appears, run
+`chmod +x run.sh` once.
 
 Alert tones use `winsound` and speech uses PowerShell with System.Speech. Both
 ship with the operating system, so there is nothing extra to install for audio.
@@ -86,9 +91,9 @@ the Camera app first; otherwise OpenCV fails to open the device.
 ## Moving or renaming the project folder
 
 The launchers resolve their own location at startup, so the repository can sit
-anywhere and can be renamed freely. `AuraDrive.command`, `run.sh` and `run.bat`
-all work from any path, and none of them depend on the folder being called
-`AuraDrive-repo` or living on the Desktop.
+anywhere and can be renamed freely. Both `AuraDrive.command` and `run.sh` work
+from any path, and neither depends on the folder being called `AuraDrive-repo`
+or living on the Desktop.
 
 One rule makes that true: **keep the launchers next to `src/`.** Moving
 `AuraDrive.command` on its own, for example onto the Desktop or into the Dock,
@@ -100,14 +105,13 @@ pointing at the original.
 Note that an IDE is a separate matter. PyCharm stores an absolute interpreter
 path in its own settings, so moving the folder will break the configured
 interpreter there even though the launchers still work. Re-select the
-interpreter at `phase_B/.venv/bin/python` if that happens.
+interpreter at `phase_B/.venv/bin/python` if that happens, or
+`phase_B/.venv/Scripts/python.exe` on Windows.
 
 ## Running from the command line
 
 The shortcut is a wrapper around `run.sh`, so anything it does can be done
 directly.
-
-**macOS and Linux**
 
 ```bash
 cd phase_B
@@ -115,15 +119,8 @@ cd phase_B
 ./run.sh             # every run after that
 ```
 
-**Windows 10/11**
-
-```bat
-cd phase_B
-run.bat --venv
-run.bat
-```
-
-Both accept the same flags:
+The same two commands work on macOS, Linux, and Windows under Git Bash or WSL.
+The flags are:
 
 | Flag | Effect |
 |---|---|
@@ -146,7 +143,7 @@ ever matters on a machine that does not have one yet. Setting
 the safe way to confirm a new machine is ready:
 
 ```bash
-./run.sh --setup      # run.bat --setup on Windows
+./run.sh --setup
 ```
 
 It installs the dependencies, verifies that MediaPipe is genuinely functional
