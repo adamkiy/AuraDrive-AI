@@ -41,9 +41,16 @@ phase_B/                 Phase B, the current system
 | Windows only | Git Bash or WSL | `cmd.exe` and PowerShell cannot run a shell script |
 
 The three Python packages are listed in `phase_B/src/requirements.txt` and the
-launcher installs them. Ollama and the model are not pip packages; the launcher
-checks for them and pulls the model, but Ollama itself must be installed first
-from [ollama.com/download](https://ollama.com/download).
+launcher installs them. The model is pulled automatically on first run.
+
+Ollama itself is system software, so the launcher will not install it behind
+your back. If it is missing, the launcher names the exact command for your
+platform, `brew install ollama`, `winget install Ollama.Ollama`, or the Linux
+install script, and runs it only if you answer yes at the prompt. Answer no, or
+run non-interactively, and it simply tells you what to run. Installing it
+yourself from [ollama.com/download](https://ollama.com/download) beforehand is
+the calmer option, especially before a demonstration where an unexpected
+password prompt is the last thing anyone wants.
 
 > **The Ollama version matters, and getting it wrong is not obvious.** The agent
 > sends a JSON Schema in the request's `format` field, which is Ollama's

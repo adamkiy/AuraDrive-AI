@@ -196,12 +196,64 @@ trap cleanup EXIT INT TERM
 ollama_up()      { ollama list >/dev/null 2>&1; }
 model_present()  { ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -Fxq "$1"; }
 
+# Offer to install Ollama, never do it silently. Installing system software
+# needs administrator rights and would otherwise happen at the worst possible
+# moment, seconds before a demonstration, behind a sudo prompt nobody expected.
+# So: name the exact command for this platform, and run it only if the operator
+# says yes at an interactive terminal. Anywhere non-interactive this just prints
+# the command and returns failure, leaving the decision to a human.
+install_ollama() {
+  local cmd=""
+  case "$(uname -s)" in
+    Darwin)
+      command -v brew >/dev/null 2>&1 && cmd="brew install ollama"
+      ;;
+    Linux)
+      cmd="curl -fsSL https://ollama.com/install.sh | sh"
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      command -v winget >/dev/null 2>&1 && cmd="winget install --id Ollama.Ollama -e"
+      ;;
+  esac
+
+  if [ -z "$cmd" ]; then
+    err "Install it from https://ollama.com/download, then re-run."
+    return 1
+  fi
+
+  err "It can be installed with:  $cmd"
+  if [ ! -t 0 ]; then
+    err "Not an interactive terminal, so nothing was installed. Run that command, then re-run."
+    return 1
+  fi
+
+  printf '[run] Run that command now? This may ask for your password. [y/N] '
+  read -r reply
+  case "$reply" in
+    [yY]|[yY][eE][sS]) ;;
+    *) err "Skipped. Install it yourself, then re-run."; return 1 ;;
+  esac
+
+  log "Installing Ollama ..."
+  if ! sh -c "$cmd"; then
+    err "The install did not succeed. Use https://ollama.com/download instead."
+    return 1
+  fi
+  command -v ollama >/dev/null 2>&1 || {
+    err "Ollama installed but is not on PATH yet. Open a new terminal and re-run."
+    return 1
+  }
+  log "Ollama installed."
+  return 0
+}
+
 if [ "$MANAGE_OLLAMA" -eq 1 ]; then
   if ! command -v ollama >/dev/null 2>&1; then
     err "Ollama is not installed — the LLM agent layer needs it."
-    err "Install from https://ollama.com/download, then re-run."
-    err "(Or re-run with --skip-ollama to exercise the deterministic cold layer only.)"
-    exit 1
+    install_ollama || {
+      err "(Or re-run with --skip-ollama to exercise the deterministic cold layer only.)"
+      exit 1
+    }
   fi
 
   if ollama_up; then
