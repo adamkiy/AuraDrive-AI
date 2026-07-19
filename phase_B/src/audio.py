@@ -101,6 +101,19 @@ class AlertSounder:
     """
 
     def __init__(self) -> None:
+        """Resolve the audio backend once and prepare the playback state.
+
+        Backend selection happens here rather than per alert so the cost is
+        paid at startup and every later call is immediate. If neither platform
+        backend is available the object disables itself and reports why on
+        stderr: silent failure would be the dangerous outcome, since the
+        deterministic layers would keep working while the driver heard nothing.
+
+        Returns
+        -------
+        None
+            The constructor only resolves the backend and prepares state.
+        """
         if sys.platform == "win32" and winsound is not None:
             self.backend = "windows"
         elif sys.platform == "darwin" and shutil.which("afplay") is not None:
@@ -243,10 +256,38 @@ class AlertSounder:
     # Internal lifecycle helpers
     # ------------------------------------------------------------------
     def _is_current(self, generation: int) -> bool:
+        """Report whether a playback token still refers to the active alert.
+
+        Playback is cancelled by invalidating a token rather than by killing a
+        thread, which cannot leave the audio device in a half-open state. A
+        worker checks this between stages and abandons its remaining work if a
+        newer alert has superseded it.
+
+        Parameters
+        ----------
+        generation : int
+            The token the calling worker was started with.
+
+        Returns
+        -------
+        bool
+            True while this worker is still the current one.
+        """
         with self._lock:
             return generation == self._generation
 
     def _is_playing(self) -> bool:
+        """Report whether a tone or a spoken phrase is currently sounding.
+
+        Used by the announcement policy to decide whether a new alert should
+        interrupt or wait, which is what keeps escalations immediate while
+        stopping routine updates from talking over each other.
+
+        Returns
+        -------
+        bool
+            True if either the tone player or the speech process is active.
+        """
         with self._lock:
             speech_alive = self._speech is not None and self._speech.poll() is None
             player_alive = self._player is not None and self._player.poll() is None
@@ -275,6 +316,26 @@ class AlertSounder:
 
     @staticmethod
     def _safe_text(text: Any, limit: int = 200) -> str:
+        """Normalise text before it reaches a speech engine.
+
+        Model output reaches this point, so it is treated as untrusted: control
+        characters are removed and whitespace collapsed, then the result is
+        truncated. Truncation is a safety property as much as a formatting one,
+        because an over-long utterance would occupy the audio channel while the
+        driver's state continues to change.
+
+        Parameters
+        ----------
+        text : Any
+            The message to be spoken.
+        limit : int
+            Maximum number of characters to keep.
+
+        Returns
+        -------
+        str
+            Text safe to hand to the speech backend.
+        """
         return " ".join(str(text or "").replace("\x00", " ").split())[:limit]
 
     def _speech_script(self, text: str, wpm: int, out_path: Optional[Path] = None) -> str:
@@ -448,6 +509,18 @@ class AlertSounder:
             chosen_text = fixed_text
 
         def run() -> None:
+            """Play the tone pattern and then the phrase, on a daemon thread.
+
+            Runs off the event loop so neither the camera nor the reflex latch
+            ever waits on audio. The token is rechecked between the tones and
+            the speech, so a newer alert cancels the phrase instead of queueing
+            behind it.
+
+            Returns
+            -------
+            None
+                The function performs an action without returning a value.
+            """
             self._play_tones(command, generation)
             if self._is_current(generation):
                 self._speak(chosen_text, wpm, generation)

@@ -27,7 +27,6 @@ from collections import deque
 
 from pose import HeadPoseTracker
 
-VERSION = "7.0.0"
 
 
 class EyeBlinkSensor:
@@ -112,6 +111,25 @@ class EyeBlinkSensor:
     EAR_OPEN_FRACTION    = 0.80   # open  threshold as fraction of baseline
 
     def __init__(self, debug: bool = True) -> None:
+        """Build the perception layer and every buffer its state machines need.
+
+        The sensor is stateful by design: eye and mouth classification, PERCLOS,
+        blink rate and yawn counting are all judgements about time rather than
+        about a single frame, so the rolling buffers created here are what make
+        those metrics possible. The head pose tracker is constructed alongside
+        them so posture is calibrated in step with the rest of perception.
+
+        Parameters
+        ----------
+        debug : bool
+            Whether to draw the telemetry overlay and EAR timeline on the
+            frame, which is what the operator sees during a live session.
+
+        Returns
+        -------
+        None
+            The constructor only prepares perception state.
+        """
         self.debug = debug
         self.perception_v2 = os.getenv("AURADRIVE_PERCEPTION_V2", "0") == "1"
 
@@ -586,6 +604,23 @@ class EyeBlinkSensor:
         return closed_ms / self.PERCLOS_WINDOW_MS
 
     def _evict_old_blinks(self, now_ms: float) -> None:
+        """Drop blink timestamps that have aged out of the rolling minute.
+
+        Blink rate is reported per minute, so the buffer must forget anything
+        older than that or the rate would only ever climb across a session.
+        Eviction happens at read time rather than on a timer, which keeps the
+        metric correct without a second scheduled task.
+
+        Parameters
+        ----------
+        now_ms : float
+            Current frame time, defining the trailing edge of the window.
+
+        Returns
+        -------
+        None
+            The function performs an action without returning a value.
+        """
         cutoff = now_ms - 60_000
         while self.blink_times and self.blink_times[0] < cutoff:
             self.blink_times.popleft()
@@ -727,6 +762,21 @@ class EyeBlinkSensor:
         ear_range = ear_max - ear_min
 
         def _to_y(val):
+            """Map an EAR value to a pixel row on the telemetry plot.
+
+            Rendering helper for the on-screen EAR timeline. Values are clamped
+            to the plotted range so an outlier cannot draw outside the panel.
+
+            Parameters
+            ----------
+            val : float
+                The EAR value to place on the vertical axis.
+
+            Returns
+            -------
+            int
+                The pixel row for that value inside the plot area.
+            """
             clamped = max(ear_min, min(ear_max, val))
             return py + ph - int(((clamped - ear_min) / ear_range) * (ph - 30)) - 15
 

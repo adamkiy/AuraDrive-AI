@@ -46,9 +46,27 @@ WARMUP_PAYLOAD = {
 
 
 async def _warmup_agent(process: AgentProcess, shared: SharedState) -> None:
-    """Load the local model before the first real dispatch so frame 1 doesn't eat the
-    cold-start latency. Holds the single-flight lock so it never races a real agent
-    call; runs concurrently with perception (the camera loop is never blocked)."""
+    """Load the local model before the first real dispatch.
+
+    A cold model load costs far more than a warm inference, and without this the
+    penalty would land on the first frame that actually needs an assessment. The
+    warm-up holds the inference lock so it cannot race a real call, and it runs
+    as its own task so perception starts immediately alongside it. Failures are
+    ignored: warming is an optimisation, and a system that cannot reach the
+    model must still start and run on its deterministic layers.
+
+    Parameters
+    ----------
+    process : AgentProcess
+        Handle to the agent subprocess that will serve real assessments.
+    shared : SharedState
+        Shared runtime state, used here for the inference lock.
+
+    Returns
+    -------
+    None
+        The function performs an action without returning a value.
+    """
     if await shared.reserve_agent():
         try:
             await asyncio.to_thread(process.call, WARMUP_PAYLOAD)
@@ -59,6 +77,26 @@ async def _warmup_agent(process: AgentProcess, shared: SharedState) -> None:
 
 
 async def run() -> None:
+    """Build every component, start the five tasks, and own the shutdown.
+
+    The tasks are peers rather than a chain: each owns one stage and they are
+    joined only by the capacity-one queues created here, which is what lets a
+    slow inference proceed without holding up perception. The teardown block
+    matters as much as the startup, because a monitoring session ends by
+    releasing the camera, stopping audio mid-phrase and closing every log
+    cleanly, whether it ended by request or by failure.
+
+    Returns
+    -------
+    None
+        Runs until the operator quits or a task cancels; returns nothing.
+
+    Raises
+    ------
+    RuntimeError
+        If the camera cannot be opened, since there is no useful degraded mode
+        for a driver monitor with no view of the driver.
+    """
     camera = cv2.VideoCapture(CAMERA_INDEX)
     if not camera.isOpened():
         raise RuntimeError(f"Cannot open camera index {CAMERA_INDEX}")
@@ -112,6 +150,18 @@ async def run() -> None:
 
 
 def main() -> None:
+    """Start the event loop and translate an operator interrupt into a clean stop.
+
+    This is the synchronous entry point the launcher calls. Catching the
+    keyboard interrupt here keeps a deliberate stop from printing a traceback,
+    so the console output distinguishes an operator ending a session from the
+    system actually failing.
+
+    Returns
+    -------
+    None
+        The function performs an action without returning a value.
+    """
     try:
         asyncio.run(run())
     except KeyboardInterrupt:

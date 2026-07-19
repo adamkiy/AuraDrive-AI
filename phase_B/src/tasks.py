@@ -63,6 +63,26 @@ class ReflexLatch:
     OPEN_CONFIRM_FRAMES: int = 5  # ~150 ms at 30 FPS
 
     def observe(self, frame: Dict[str, Any]) -> Tuple[bool, bool]:
+        """Advance the latch by one frame and report whether to fire.
+
+        The latch is what makes a microsleep a single event rather than a
+        cascade: a two-second closure spans roughly sixty frames, and without it
+        each one would raise its own EMERGENCY. Re-arming requires the eyes to
+        be confirmed open across several consecutive frames, so a momentary
+        landmark failure part-way through one long closure cannot reset the
+        latch and produce a duplicate alert.
+
+        Parameters
+        ----------
+        frame : Dict[str, Any]
+            The metrics for this frame, read for eye state and closure duration.
+
+        Returns
+        -------
+        tuple
+            Whether the latch is currently held, and whether this frame is the
+            one that should publish the EMERGENCY.
+        """
         state = str(frame.get("Driver_State", "EYES_OPEN"))
         try:
             closed_ms = float(frame.get("Eyes Closed Duration", 0) or 0)
@@ -93,22 +113,74 @@ class SharedState:
     agent_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def set_history(self, items: List[Dict[str, Any]]) -> None:
+        """Store the latest snapshot of the retained window.
+
+        Parameters
+        ----------
+        items : List[Dict[str, Any]]
+            Frame records copied from the rolling window.
+
+        Returns
+        -------
+        None
+            The function performs an action without returning a value.
+        """
         async with self.history_lock:
             self.history = list(items)
 
     async def get_history(self) -> List[Dict[str, Any]]:
+        """Return the current history snapshot for building agent evidence.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            A copy of the snapshot, so the caller can aggregate it while the
+            context task keeps refreshing.
+        """
         async with self.history_lock:
             return list(self.history)
 
     async def set_decision(self, decision: Dict[str, Any]) -> None:
+        """Record the decision currently published to the driver.
+
+        Parameters
+        ----------
+        decision : Dict[str, Any]
+            The decision just published, stored so other tasks can read the
+            live state without reaching into the publisher.
+
+        Returns
+        -------
+        None
+            The function performs an action without returning a value.
+        """
         async with self.decision_lock:
             self.decision = dict(decision)
 
     async def get_decision(self) -> Optional[Dict[str, Any]]:
+        """Return the decision currently published, if there is one.
+
+        Returns
+        -------
+        Dict[str, Any] or None
+            A copy of the live decision, or None before the first publication.
+        """
         async with self.decision_lock:
             return dict(self.decision) if self.decision else None
 
     async def reserve_agent(self) -> bool:
+        """Try to claim the inference slot, without waiting if it is taken.
+
+        Only one inference runs at a time, since a second concurrent call would
+        compete for the same model and slow both. Returning immediately rather
+        than blocking is the point: the caller skips the agent for this frame
+        and continues on the deterministic baseline instead of stalling.
+
+        Returns
+        -------
+        bool
+            True if the slot was claimed and the caller may dispatch.
+        """
         async with self.agent_lock:
             if self.agent_busy:
                 return False
@@ -116,6 +188,13 @@ class SharedState:
             return True
 
     async def release_agent(self) -> None:
+        """Release the inference slot so the next frame may dispatch.
+
+        Returns
+        -------
+        None
+            The function performs an action without returning a value.
+        """
         async with self.agent_lock:
             self.agent_busy = False
 
@@ -124,10 +203,32 @@ class AgentProcess:
     """Long-lived newline-delimited JSON subprocess wrapper for agent.py."""
 
     def __init__(self) -> None:
+        """Prepare the handle to the agent subprocess without starting it.
+
+        The process is started lazily on first use, and its path is resolved
+        relative to this module so the layout can move without reconfiguration.
+
+        Returns
+        -------
+        None
+            The constructor only prepares internal state.
+        """
         self.proc: Optional[subprocess.Popen[str]] = None
         self.path = Path(__file__).with_name("agent.py")
 
     def _start(self) -> subprocess.Popen[str]:
+        """Return the running agent process, starting or restarting it if needed.
+
+        One long-lived process is what keeps the model warm across a session; a
+        fresh process per frame would pay the model load every time. Checking
+        liveness on each call means a crashed agent is transparently replaced on
+        the next assessment rather than disabling reasoning for the session.
+
+        Returns
+        -------
+        subprocess.Popen
+            A live agent process ready to accept an evidence object.
+        """
         if self.proc is None or self.proc.poll() is not None:
             self.proc = subprocess.Popen(
                 [sys.executable, "-u", str(self.path)],
@@ -141,6 +242,25 @@ class AgentProcess:
         return self.proc
 
     def call(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Send one evidence object to the agent and read back its decision.
+
+        This is a blocking exchange over pipes, which is why the caller runs it
+        on a worker thread rather than on the event loop. Every failure is
+        converted into an error result instead of an exception, and the process
+        handle is dropped so the next call starts a fresh one. That is what lets
+        the arbiter treat a crashed model as a timeout and fall back to the
+        deterministic decision.
+
+        Parameters
+        ----------
+        payload : Dict[str, Any]
+            The evidence object for one frame.
+
+        Returns
+        -------
+        Dict[str, Any]
+            The agent's decision, or an error result naming the failure.
+        """
         try:
             process = self._start()
             assert process.stdin is not None and process.stdout is not None
@@ -156,6 +276,17 @@ class AgentProcess:
             return {"status": "error", "detail": f"agent_process:{type(exc).__name__}:{exc}"}
 
     def stop(self) -> None:
+        """Shut the agent process down at the end of a session.
+
+        Closing standard input asks the agent to finish its loop and exit on its
+        own, which lets it flush its log; termination is the fallback if it does
+        not exit promptly.
+
+        Returns
+        -------
+        None
+            The function performs an action without returning a value.
+        """
         if self.proc and self.proc.poll() is None:
             try:
                 if self.proc.stdin:
@@ -169,6 +300,25 @@ class Publisher:
     """The only point that writes UI state, temporal state and audit events."""
 
     def __init__(self, shared: SharedState, audit: FinalDecisionLog) -> None:
+        """Build the single point through which every decision reaches the driver.
+
+        Concentrating actuation here is what keeps the audio, the banner, the
+        temporal guard and the audit trail consistent with one another: there is
+        no second path by which a decision could reach the driver unlogged or
+        unsmoothed.
+
+        Parameters
+        ----------
+        shared : SharedState
+            Shared runtime state, updated with each published decision.
+        audit : FinalDecisionLog
+            The audit trail that records each change of published decision.
+
+        Returns
+        -------
+        None
+            The constructor only prepares internal state.
+        """
         self.shared = shared
         self.audit = audit
         self.sounder = AlertSounder()
@@ -192,6 +342,29 @@ class Publisher:
         event: str,
         force: bool = False,
     ) -> Dict[str, Any]:
+        """Publish one decision: smooth it, actuate it, and audit the change.
+
+        The order matters. The temporal guard runs first so what is actuated is
+        what is recorded, and the audit row is written only when the decision
+        actually changes, which keeps the trail a readable timeline instead of
+        thirty identical rows a second.
+
+        Parameters
+        ----------
+        candidate : Dict[str, Any]
+            The decision proposed for publication.
+        frame_id : int or None
+            The originating frame, or None where no single frame applies.
+        event : str
+            Audit tag naming which path produced this decision.
+        force : bool
+            Write an audit row even if the decision has not changed.
+
+        Returns
+        -------
+        Dict[str, Any]
+            The decision actually published after temporal smoothing.
+        """
         final = self.temporal.apply(candidate)
         await self.shared.set_decision(final)
         self.sounder.notify(final)  # audio actuation: chime + spoken message (non-blocking)
@@ -294,6 +467,24 @@ def render_no_face(frame: Any, seconds: float) -> None:
 
 
 def render_decision(frame: Any, decision: Dict[str, Any]) -> None:
+    """Draw the graded alert banner for the current decision onto the frame.
+
+    Rendering helper. The banner is colour-coded by severity so the alert level
+    is readable at a glance, and nothing is drawn when no action is called for,
+    which keeps the display quiet during normal driving.
+
+    Parameters
+    ----------
+    frame : Any
+        The camera image to draw on, modified in place.
+    decision : Dict[str, Any]
+        The published decision supplying the severity and message.
+
+    Returns
+    -------
+    None
+        The function draws on the frame and returns nothing.
+    """
     if decision.get("command") == "NO_ACTION":
         return
     color = {"LOW": (0, 200, 0), "MEDIUM": (0, 165, 255), "HIGH": (0, 0, 255)}.get(
@@ -320,6 +511,34 @@ async def task_sensor(
     shared: SharedState,
     publisher: Publisher,
 ) -> None:
+    """T1: capture, perceive, latch the reflex, store, and render.
+
+    The fastest task and the only one that touches the camera. It runs the
+    perception layer, checks the reflex latch, writes the frame to the rolling
+    window and draws the display, all at camera rate. A reflex EMERGENCY is
+    published from here directly, bypassing the cold engine, the agent and the
+    arbiter, because the most dangerous state must not wait on any other layer.
+
+    Parameters
+    ----------
+    sensor : Any
+        The perception layer that turns a frame into metrics.
+    camera : Any
+        The open capture device.
+    db : SensorDB
+        The rolling window each frame is written to.
+    sensor_q : asyncio.Queue
+        Outbound queue carrying the freshest frame to the cold engine.
+    shared : SharedState
+        Shared runtime state.
+    publisher : Publisher
+        Used to actuate a reflex EMERGENCY without leaving this task.
+
+    Returns
+    -------
+    None
+        Runs until the operator quits, which cancels the task.
+    """
     frame_id = 0
     started = time.monotonic()
     reflex = ReflexLatch()
@@ -382,6 +601,25 @@ async def task_sensor(
 
 
 async def task_cold(sensor_q: asyncio.Queue, cold_q: asyncio.Queue) -> None:
+    """T2: turn the freshest frame into the deterministic baseline.
+
+    Consumes only the newest frame rather than a backlog, so the baseline always
+    describes the present. Frames already handled by the reflex latch are passed
+    over, since re-deciding one would duplicate the emergency and pay for an
+    inference the reflex path deliberately skipped.
+
+    Parameters
+    ----------
+    sensor_q : asyncio.Queue
+        Inbound frames from perception.
+    cold_q : asyncio.Queue
+        Outbound baseline decisions for the arbiter.
+
+    Returns
+    -------
+    None
+        Runs until cancelled.
+    """
     while True:
         frame = await sensor_q.get()
 
@@ -410,6 +648,25 @@ async def task_cold(sensor_q: asyncio.Queue, cold_q: asyncio.Queue) -> None:
 
 
 async def task_context(db: SensorDB, shared: SharedState) -> None:
+    """T3: refresh the history snapshot the agent reasons over.
+
+    Aggregating the window is comparatively expensive, so it happens on its own
+    slow cadence rather than per frame. Doing it here means an agent dispatch
+    can pick up a ready snapshot instead of building one inside the request
+    path, which keeps that path short.
+
+    Parameters
+    ----------
+    db : SensorDB
+        The rolling window being snapshotted.
+    shared : SharedState
+        Where the snapshot is published for the arbiter to use.
+
+    Returns
+    -------
+    None
+        Runs until cancelled.
+    """
     while True:
         await shared.set_history(await db.window())
         await asyncio.sleep(CONTEXT_REFRESH)
@@ -421,6 +678,31 @@ async def task_agent(
     agent_log: AgentDecisionLog,
     shared: SharedState,
 ) -> None:
+    """T4: run the model on dispatched frames, one inference at a time.
+
+    The blocking call is moved to a worker thread so the event loop keeps
+    serving perception while the model runs, which is what allows an inference
+    measured in seconds to coexist with a camera loop measured in milliseconds.
+    The inference slot is released in a finally block, so a failed assessment
+    cannot leave the agent permanently marked busy and silently disable
+    reasoning for the rest of the session.
+
+    Parameters
+    ----------
+    process : AgentProcess
+        Handle to the agent subprocess.
+    agent_q : asyncio.Queue
+        Inbound dispatch requests from the arbiter.
+    agent_log : AgentDecisionLog
+        The rendezvous the arbiter is waiting on.
+    shared : SharedState
+        Shared runtime state, used here to release the inference slot.
+
+    Returns
+    -------
+    None
+        Runs until cancelled.
+    """
     while True:
         request = await agent_q.get()
         frame_id = int(request["frame_id"])
@@ -437,6 +719,31 @@ async def resolve_agent(
     agent_log: AgentDecisionLog,
     publisher: Publisher,
 ) -> None:
+    """Await one frame's verdict, arbitrate it, and publish the outcome.
+
+    Runs as its own task so the arbiter can keep publishing baselines while this
+    one waits. If the verdict does not arrive within the timeout the
+    deterministic baseline simply stands, which is the graceful degradation the
+    design depends on: a slow or absent model costs contextual refinement, never
+    protection.
+
+    Parameters
+    ----------
+    frame_id : int
+        The frame whose verdict is awaited.
+    baseline : Dict[str, Any]
+        The deterministic decision for that frame, and the floor for
+        arbitration.
+    agent_log : AgentDecisionLog
+        The rendezvous carrying the verdict.
+    publisher : Publisher
+        Used to publish the arbitrated result.
+
+    Returns
+    -------
+    None
+        The function performs an action without returning a value.
+    """
     entry = await agent_log.wait(frame_id, AGENT_TIMEOUT)
     if entry is None:
         # The cold baseline was already published. This event makes the
@@ -471,6 +778,33 @@ async def task_arbiter(
     shared: SharedState,
     publisher: Publisher,
 ) -> None:
+    """T5: publish the baseline at once, then refine it when the agent replies.
+
+    The ordering is the safety property. The deterministic baseline is published
+    on the frame it was computed from, so protection is never delayed by
+    reasoning; the agent is dispatched only if its slot is free, and its verdict
+    is arbitrated against that same baseline when it arrives. Between refreshes
+    the most recent agent verdict continues to stand, subject to its own expiry,
+    so a slow model still contributes rather than flickering in and out.
+
+    Parameters
+    ----------
+    cold_q : asyncio.Queue
+        Inbound deterministic baselines.
+    agent_q : asyncio.Queue
+        Outbound dispatch requests for the agent.
+    agent_log : AgentDecisionLog
+        The rendezvous verdicts arrive on.
+    shared : SharedState
+        Shared runtime state, holding the history snapshot and inference slot.
+    publisher : Publisher
+        The single point through which decisions reach the driver.
+
+    Returns
+    -------
+    None
+        Runs until cancelled.
+    """
     while True:
         packet = await cold_q.get()
         frame = packet["frame"]

@@ -1,4 +1,17 @@
-"""Calibrated directional head-pose tracker (posture signal, not a diagnosis)."""
+"""Calibrated head posture tracking, the third fatigue channel.
+
+Eye and mouth metrics miss the classic nodding off, where a driver's head
+drops while the eyes are still open. This module supplies that signal by
+recovering pitch and roll and judging them against a baseline learned for the
+current driver, because raw angles carry no meaning when drivers sit
+differently and cameras mount at different heights.
+
+Two properties keep the channel resistant to false alarms. Deviations are
+measured from a per-driver baseline rather than from absolute zero, and a
+deviation must persist before it counts, which is what separates a genuine
+head drop from a mirror check or a glance at the dashboard. The output is a
+posture signal that corroborates other evidence, never a diagnosis on its own.
+"""
 from __future__ import annotations
 import os
 from statistics import median
@@ -20,6 +33,24 @@ class HeadPoseTracker:
     PERSIST_MS = float(os.getenv("AURADRIVE_PITCH_PERSIST_MS", "1500"))
 
     def __init__(self, pitch_down_sign: Optional[int] = None) -> None:
+        """Initialise the calibration buffers and the pitch direction convention.
+
+        Which sign of pitch means "head down" depends on how the camera is
+        mounted, so it is configurable rather than assumed. The tracker starts
+        uncalibrated and stays inert until it has seen enough stable frames to
+        learn the driver's neutral posture.
+
+        Parameters
+        ----------
+        pitch_down_sign : int or None
+            Sign convention for a downward nod on this installation; taken from
+            the environment when not supplied.
+
+        Returns
+        -------
+        None
+            The constructor only prepares internal state.
+        """
         raw = pitch_down_sign if pitch_down_sign is not None else int(os.getenv("AURADRIVE_PITCH_DOWN_SIGN", "1"))
         self.pitch_down_sign = 1 if raw >= 0 else -1
         self._pitch_samples: list[float] = []
@@ -31,13 +62,71 @@ class HeadPoseTracker:
 
     @property
     def calibrated(self) -> bool:
+        """Report whether a neutral posture baseline has been established.
+
+        Until both baselines exist the head channel reports nothing active, so
+        this flag is what prevents an uncalibrated session from contributing
+        head-pose evidence to a fatigue decision.
+
+        Returns
+        -------
+        bool
+            True once both the pitch and roll baselines have been learned.
+        """
         return self._pitch_baseline is not None and self._roll_baseline is not None
 
     @staticmethod
     def angular_delta(current: float, baseline: float) -> float:
+        """Measure the signed angular difference, wrapped to the shortest arc.
+
+        Euler angles recovered from the face mesh can sit either side of the
+        plus or minus 180 degree discontinuity, where a naive subtraction would
+        report a large deviation for a head that barely moved. Wrapping the
+        result keeps a small physical movement small, which is what stops the
+        discontinuity from manufacturing a spurious nod-off.
+
+        Parameters
+        ----------
+        current : float
+            The angle measured on the current frame, in degrees.
+        baseline : float
+            The driver's calibrated neutral angle, in degrees.
+
+        Returns
+        -------
+        float
+            The deviation from neutral along the shortest arc, in degrees.
+        """
         return ((float(current) - float(baseline) + 180.0) % 360.0) - 180.0
 
     def update(self, pitch: float, roll: float, timestamp_ms: float, *, usable: bool) -> Dict[str, Any]:
+        """Advance the tracker by one frame and report the head posture state.
+
+        While uncalibrated the method collects samples and learns the neutral
+        baseline from their median, which is robust to the occasional bad
+        landmark fit in a way a mean would not be. Once calibrated it measures
+        the deviation, and a deviation past the threshold only becomes active
+        after it has persisted, so momentary glances never register as a nod.
+
+        Parameters
+        ----------
+        pitch : float
+            Head pitch on this frame, in degrees.
+        roll : float
+            Head roll on this frame, in degrees.
+        timestamp_ms : float
+            Frame time, used to measure how long a deviation has persisted.
+        usable : bool
+            Whether the pose estimate is reliable enough to calibrate from,
+            which keeps a poor landmark fit out of the learned baseline.
+
+        Returns
+        -------
+        dict
+            The baselines, the current deviations, the two persistence-gated
+            active flags and the calibration state, ready to join the frame's
+            metrics payload.
+        """
         if usable and not self.calibrated:
             self._pitch_samples.append(float(pitch))
             self._roll_samples.append(float(roll))

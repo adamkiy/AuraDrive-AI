@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""AuraDrive v7 Native-Ollama agent. Input evidence is text-only; output is structured JSON."""
+"""Local reasoning agent: the interpretive layer, run as a separate process.
+
+The agent reads a described behavioural trajectory and returns a structured
+judgement. It never calculates: every threshold, count and trend it is shown was
+already settled in Python, so the model is asked only to interpret validated
+evidence. That division is the project's central finding, since the same small
+model that was unreliable as a calculator proved dependable as an interpreter.
+
+The module runs as a subprocess that reads one evidence object per line on
+standard input and writes one decision per line on standard output. Isolating
+it this way keeps a slow or wedged model from touching the event loop, and lets
+the process be restarted without disturbing perception.
+
+Model output is treated as untrusted throughout. It is validated against a
+strict schema, then passed through deterministic guards that cap an EMERGENCY
+to URGENT, gate the post-microsleep label behind a confirmed event, and strip
+invented navigation detail from the driver-facing message. Anything that fails
+validation degrades to a safe result rather than reaching the arbiter.
+"""
 from __future__ import annotations
 import argparse, json, os, re, sys, time, urllib.error, urllib.request
 from pathlib import Path
@@ -364,6 +382,19 @@ OUTPUT_SCHEMA={
 
 
 def resolve_model() -> str:
+    """Choose which installed model to call, preferring the primary one.
+
+    The deployment target may have either model pulled, so the choice is made
+    from what is actually installed rather than assumed. A failure to reach
+    Ollama returns the primary name anyway: the call that follows will fail on
+    its own and be handled as a normal model failure, which keeps the fallback
+    logic in one place instead of two.
+
+    Returns
+    -------
+    str
+        The model name to request for this inference.
+    """
     try:
         request = urllib.request.Request(f"{OLLAMA_URL}/api/tags", method="GET")
         with urllib.request.urlopen(request, timeout=3) as response:
@@ -375,6 +406,24 @@ def resolve_model() -> str:
 
 
 def validate_payload(payload: Any) -> tuple[bool, str]:
+    """Check that an evidence object is complete before any inference is paid for.
+
+    Inference is the most expensive step in the pipeline, so a malformed request
+    is rejected here rather than discovered afterwards. Validating the safety
+    floor also matters: the floor is what constrains the model, and an
+    unrecognised floor would leave the request unconstrained.
+
+    Parameters
+    ----------
+    payload : Any
+        The evidence object received from the arbiter.
+
+    Returns
+    -------
+    tuple
+        Whether the payload is usable, and a short reason code naming the first
+        problem found so the audit trail records why a call was skipped.
+    """
     if not isinstance(payload, dict):
         return False, "payload_not_object"
     for key in ("system_log", "facts_text", "frame_narrative", "safety_floor_command", "frame_id"):
@@ -389,6 +438,25 @@ def validate_payload(payload: Any) -> tuple[bool, str]:
 
 
 def user_message(payload: Dict[str, Any]) -> str:
+    """Assemble the prompt from the authoritative evidence blocks.
+
+    This function defines exactly what the model is allowed to see. Only the
+    three prose blocks are included; the facts dictionary stays in Python for
+    validating the reply. The safety floor is restated here in plain language so
+    the constraint is visible to the model as well as enforced afterwards by the
+    arbiter, and the few-shot examples are explicitly disowned so their invented
+    figures cannot be copied into a real assessment.
+
+    Parameters
+    ----------
+    payload : Dict[str, Any]
+        The validated evidence object for this frame.
+
+    Returns
+    -------
+    str
+        The complete user prompt for this inference.
+    """
     # Only these textual blocks are presented to the LLM. The raw facts dict
     # exists for Python-side validation and is never embedded in this message.
     return "\n\n".join([
@@ -408,6 +476,22 @@ def user_message(payload: Dict[str, Any]) -> str:
 
 
 def _as_nonnegative_int(value: Any) -> int:
+    """Coerce a value to a count, treating anything unusable as zero.
+
+    Used on the fact that authorises the post-microsleep state label, so the
+    conservative direction matters: an unreadable value must not be taken as
+    evidence that a microsleep occurred.
+
+    Parameters
+    ----------
+    value : Any
+        The raw value to interpret as a count.
+
+    Returns
+    -------
+    int
+        The value as a count of zero or more.
+    """
     try:
         return max(0, int(float(value)))
     except (TypeError, ValueError):
@@ -415,6 +499,23 @@ def _as_nonnegative_int(value: Any) -> int:
 
 
 def _microsleep_event_count(payload: Dict[str, Any]) -> int:
+    """Read the confirmed microsleep count from the Python-side facts.
+
+    This is the single fact that authorises the Post-Microsleep Recovery state.
+    Taking it from the facts dictionary rather than from the model's reply is
+    what makes that label a verified claim instead of a claim the model can make
+    about itself.
+
+    Parameters
+    ----------
+    payload : Dict[str, Any]
+        The evidence object, whose facts entry holds the verified counts.
+
+    Returns
+    -------
+    int
+        The number of confirmed microsleep events in the retained window.
+    """
     facts = payload.get("facts")
     return _as_nonnegative_int(facts.get("microsleep_event_count", 0)) if isinstance(facts, dict) else 0
 
@@ -479,6 +580,32 @@ def _guard_deterministic_states(value: Dict[str, Any], payload: Dict[str, Any]) 
 
 
 def validate_output(value: Any, floor: str) -> tuple[bool, str]:
+    """Check a model reply against the strict output schema.
+
+    A small model can return the right shape with the wrong contents, or
+    plausible prose where an enumerated value belongs, so every field is checked
+    for type, membership and length. Length limits are enforced because an
+    over-long message would overflow the banner and occupy the speech channel.
+
+    Deliberately, a command below the safety floor is still valid here. The
+    arbiter, not this wrapper, applies the floor, so letting the low command
+    through means the override is recorded as an explicit arbitration event
+    rather than silently corrected at the boundary.
+
+    Parameters
+    ----------
+    value : Any
+        The decoded model reply.
+    floor : str
+        The safety floor in force, retained for context; the floor itself is
+        applied downstream by the arbiter.
+
+    Returns
+    -------
+    tuple
+        Whether the reply is usable, and a reason code naming the first
+        violation found.
+    """
     if not isinstance(value, dict):
         return False, "output_not_object"
     if set(value) != set(OUTPUT_SCHEMA["required"]):
@@ -504,6 +631,26 @@ def validate_output(value: Any, floor: str) -> tuple[bool, str]:
 
 
 def invoke(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Call the local model and decode its structured reply.
+
+    The request is deliberately constrained: zero temperature for repeatability,
+    a schema-constrained response format, and a token ceiling, because this call
+    sits in a real-time loop and an unbounded generation would extend an already
+    slow step. Nothing here reaches the network beyond the local endpoint, which
+    is what keeps the system fully on-device.
+
+    Parameters
+    ----------
+    payload : Dict[str, Any]
+        The validated evidence object for this frame.
+
+    Returns
+    -------
+    Dict[str, Any]
+        The model result with its status, the model used and the measured
+        latency, or a safe error result if the call failed or the reply did not
+        validate.
+    """
     selected = resolve_model()
     request = {
         "model": selected,
@@ -551,6 +698,27 @@ def invoke(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def log(payload: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Append one model call and its result to the agent decision log.
+
+    Both the evidence sent and the reply received are recorded, which is what
+    makes a decision reproducible after the fact: a reviewer can see exactly
+    what the model was shown before judging what it concluded. The measured
+    latency recorded here is the source of the timing figures reported in the
+    project book. A logging failure is suppressed, since losing an audit row
+    must never take down a running safety system.
+
+    Parameters
+    ----------
+    payload : Dict[str, Any]
+        The evidence object sent to the model.
+    result : Dict[str, Any]
+        The result returned, including status, model and latency.
+
+    Returns
+    -------
+    None
+        The function performs an action without returning a value.
+    """
     try:
         row = {
             "timestamp_ms": int(time.time() * 1000),
@@ -569,6 +737,24 @@ def log(payload: Dict[str, Any], result: Dict[str, Any]) -> None:
 
 
 def process(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one evidence object through the full agent pipeline.
+
+    Validates the request, invokes the model, records the exchange, and returns
+    the result. An invalid request returns NO_ACTION rather than an exception,
+    because this function is the subprocess boundary: the caller is a pipe, and
+    the arbiter applies the deterministic floor to whatever comes back, so a
+    quiet answer here cannot lower the alert the driver actually receives.
+
+    Parameters
+    ----------
+    payload : Dict[str, Any]
+        The evidence object received on standard input.
+
+    Returns
+    -------
+    Dict[str, Any]
+        The agent result, or a safe error result if the request was malformed.
+    """
     ok, reason = validate_payload(payload)
     if not ok:
         return {"status": "error", "output": {"command": "NO_ACTION", "args": {"reason": "invalid_payload", "message": ""}}, "detail": reason}
@@ -578,6 +764,18 @@ def process(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def probe() -> int:
+    """Run one synthetic assessment end to end as a health check.
+
+    Exercises the real path, meaning model resolution, inference, schema
+    validation and the guards, against a fixed evidence object. This is how the
+    agent is verified on a new machine without a camera or a driver, and its
+    exit code makes it usable from a setup script.
+
+    Returns
+    -------
+    int
+        Zero if the assessment completed successfully, one otherwise.
+    """
     demo = {
         "frame_id": 1,
         "safety_floor_command": "GENTLE_ALERT",
@@ -592,6 +790,18 @@ def probe() -> int:
 
 
 def main() -> None:
+    """Serve assessments over standard input and output, one per line.
+
+    The line-oriented loop is what lets the parent hold a single warm process
+    across the whole session, avoiding a model reload on every frame. Undecodable
+    input becomes an empty object rather than an exception, so one bad line
+    cannot end a monitoring session.
+
+    Returns
+    -------
+    None
+        The function performs an action without returning a value.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe", action="store_true")
     args = parser.parse_args()

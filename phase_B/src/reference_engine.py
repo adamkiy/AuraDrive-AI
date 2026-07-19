@@ -1,84 +1,76 @@
-# reference_engine.py
+"""Deterministic decision oracle and the safety-net fallback.
+
+This engine grades fatigue from validated sensor metrics without reference to
+the language model, and it is what the system falls back to whenever the model
+is slow, unavailable or rejected. Being the last line of defence sets three
+requirements: it must never trust an unvalidated number, never crash on bad
+input, and be explicit about which of its thresholds rest on published evidence
+and which are engineering judgement.
+
+Method
+------
+Fatigue is scored on a 0 to 10 scale as a weighted fusion of PERCLOS, closure
+duration, blink rate and yawn rate. The weights are not chosen by feel: they are
+derived through the Analytic Hierarchy Process from a documented pairwise
+comparison matrix, accepted only after its consistency ratio fell well below
+Saaty's bound. Bounded context multipliers for time of day and trip duration
+then amplify the base score, subject to a calibration floor that prevents
+context alone from manufacturing an EMERGENCY out of weak physiological
+evidence.
+
+What is actually research-validated
+-----------------------------------
+Only two numbers here are backed by primary literature:
+
+    PERCLOS graded bands   Grace (2001): moderate 0.08 to 0.14, severe above 0.14
+    EAR closure point      Soukupova and Cech (2016): EAR = 0.2
+
+Everything else, meaning the closure sub-bands, the blink bands, the yawn
+thresholds, the multiplier values and the score band boundaries, is a reasoned
+engineering choice rather than a validated constant. Each is tagged
+[ENGINEERING] at its definition so a reader can tell exactly what rests on
+evidence and what rests on judgement. The [ENGINEERING] values are not presented
+as medically validated anywhere in the project report.
+
+Design decisions worth knowing
+------------------------------
+EAR is deliberately absent from the score. EAR, closure duration and PERCLOS all
+derive from the same raw signal, so scoring EAR as a third input would count the
+same physiology three times. PERCLOS captures aggregate closure and closure
+duration captures the severity of the current event; EAR remains in the payload
+as context for the agent but does not inflate the deterministic score.
+
+The cognitive state label is derived from whichever signal dominated the score,
+not from the score band alone, so a closure-driven result and a blink-driven
+result at the same severity are not described identically.
+
+Command to severity mapping is imported from decision.py rather than duplicated
+here, so this engine and the agent can never disagree about what a command means.
+
+Sources
+-------
+[1] Dinges, D.F. and Grace, R. (1998). PERCLOS: A Valid Psychophysiological
+    Measure of Alertness. FHWA Office of Motor Carriers, FHWA-MCRT-98-006.
+[2] Grace, R. (2001). Drowsy Driver Monitor and Warning System. Carnegie Mellon
+    Robotics Institute. PERCLOS bands: moderate 0.08 to 0.14, severe above 0.14.
+[3] Soukupova, T. and Cech, J. (2016). Real-Time Eye Blink Detection using
+    Facial Landmarks. 21st CVWW. EAR = 0.2, verified against Fig. 2.
+[4] Stern, J.A., Boyer, D. and Schroeder, D. (1994). Blink Rate: A Possible
+    Measure of Fatigue. Human Factors 36(2):285-297. Note that blink rate rises
+    with fatigue, which does not support a low-only rule, so the bands here are
+    symmetric.
+[5] Williamson, A.M. and Feyer, A.M. (2000). Moderate sleep deprivation produces
+    impairments equivalent to alcohol intoxication. Occup Environ Med
+    57(10):649-655. 17 to 19 hours awake is roughly 0.05 percent BAC.
+
+Claims not cited as validated
+-----------------------------
+Wierwille and Ellsworth (1994) originated the PERCLOS metric; the fact is
+confirmed but the exact bibliographic record is unverified. McIntire et al.
+(2014) is unverified. No physiological source for yawning frequency has been
+confirmed, so yawn scoring is tagged [ENGINEERING] pending one.
 """
-AuraDrive — Reference Engine (v5)
-===================================
-Deterministic, evidence-based decision oracle, AND the system's safety-net
-fallback when the LLM agent is unavailable.  Because it is the last line of
-defence, it must (a) never trust unvalidated numbers, (b) never crash on bad
-input, and (c) be explicit about which thresholds are research-validated and
-which are engineering choices.
 
-CHANGES IN v5 (this revision)
-──────────────────────────────
-⓪ WEIGHTS now derived via AHP (Analytic Hierarchy Process) with a documented
-  pairwise matrix and a verified consistency ratio (CR = 0.006 < 0.10), the
-  same methodology as Wei et al. (2023).  See the WEIGHTS section.
-⓪ EMERGENCY FLOOR added: context multipliers can no longer manufacture an
-  EMERGENCY from a merely-moderate physiological base (the PERCLOS=0.20-at-
-  03:00 → EMERGENCY problem).  See the SCORE → COMMAND section.
-⓪ command → severity is now IMPORTED from decision.py (the single source of
-  truth) instead of being held in a local _CMD_TO_SEVERITY copy.  The oracle
-  and the agent can no longer disagree on what severity a command carries.
-
-WHAT IS ACTUALLY RESEARCH-VALIDATED HERE (be honest about this)
-─────────────────────────────────────────────────────────────────
-Only TWO numbers in this whole engine are backed by primary literature:
-  • PERCLOS graded bands  — Grace (2001): moderate 0.08–0.14, severe >0.14.
-  • EAR closure point     — Soukupová & Čech (2016): EAR = 0.2.
-EVERYTHING ELSE — closure sub-bands, blink bands, yawn thresholds, the
-context multiplier VALUES, the score-band boundaries — is a reasonable
-ENGINEERING choice, NOT a validated constant.  Each such value is tagged
-[ENGINEERING] below so reviewers know exactly what rests on evidence and
-what rests on judgement.  Do not present the [ENGINEERING] values as
-medically validated in the report.
-
-CHANGES IN v4
-──────────────
-① EAR REMOVED from scoring entirely.  Rationale: EAR, closure-duration, and
-   PERCLOS are all derived from the same raw EAR signal in sensor.py.  PERCLOS
-   captures aggregate closure (validated); closure-duration captures the
-   current event's severity and is the leading edge.  Adding raw EAR as a
-   third input triple-counts the same physiology.  The previous graded EAR
-   "bonus" (0.26/0.23/0.20/0.17) had no published basis — only EAR=0.2 is
-   validated, and at 0.2 the sensor has ALREADY flagged closure, so it is
-   redundant.  EAR remains in the payload for the LLM's context; it just no
-   longer inflates the deterministic score.
-   (If you ever want to catch sustained "heavy lids" in the 0.20–0.22 band
-   that the state machine misses, the correct fix is a NEW sensor metric, not
-   a re-introduced arbitrary EAR scale here.)
-
-② INPUT VALIDATION added.  All numeric inputs are safely coerced and clamped
-   to valid ranges before scoring.  Non-numeric input no longer crashes; it
-   degrades to a neutral default and sets input_valid=False in the breakdown
-   so the pipeline/log can see the input was malformed.
-
-③ cognitive_state is now DERIVED FROM THE DOMINANT SIGNAL, not hard-wired to
-   the score band.  A closure-driven score and a blink-driven score no longer
-   get the same label.
-
-VERIFIED SOURCES
-─────────────────
-[1] Dinges, D.F., & Grace, R. (1998). PERCLOS: A Valid Psychophysiological
-    Measure of Alertness as Assessed by Psychomotor Vigilance. FHWA,
-    Office of Motor Carriers, Tech Brief FHWA-MCRT-98-006.
-[2] Grace, R. (2001). Drowsy Driver Monitor and Warning System. Carnegie
-    Mellon Robotics Institute ("Copilot").  [PERCLOS bands: mod 0.08–0.14, sev >0.14]
-[3] Soukupová, T., & Čech, J. (2016). Real-Time Eye Blink Detection using
-    Facial Landmarks. 21st CVWW, Slovenia.  [EAR=0.2, verified Fig. 2]
-[4] Stern, J.A., Boyer, D., & Schroeder, D. (1994). Blink Rate: A Possible
-    Measure of Fatigue. Human Factors 36(2):285-297.  [NOTE: blink rate RISES
-    with fatigue; does not support a low-only rule — bands here are symmetric]
-[5] Williamson, A.M., & Feyer, A.M. (2000). Moderate sleep deprivation ...
-    Occup Environ Med 57(10):649-655.  [17–19 h awake ≈ 0.05% BAC]
-
-STILL TO VERIFY (do NOT cite as validated)
-────────────────────────────────────────────
-[V1] Wierwille & Ellsworth (1994) — original 1994 PERCLOS metric; fact
-     confirmed, exact bibliographic record unverified.
-[V2] McIntire et al. (2014) — UNVERIFIED.
-[V3] A physiological citation for YAWNING frequency — none confirmed; yawn
-     scoring is [ENGINEERING] pending a verified source.
-"""
 
 from __future__ import annotations
 import os
@@ -196,6 +188,25 @@ _MAX_CONTEXT_MULTIPLIER = 2.5
 
 
 def _time_of_day_multiplier(time_of_day: Optional[str]) -> float:
+    """Amplify the base score according to circadian risk.
+
+    The same physiological reading carries more risk at 03:00 than at midday,
+    so the clock is treated as context rather than as evidence: it scales what
+    the body is already showing but can never create a signal on its own. Any
+    unparseable or out-of-range clock value returns a neutral multiplier, so a
+    bad timestamp cannot silently inflate a decision. All bands are tagged
+    [ENGINEERING] rather than presented as validated constants.
+
+    Parameters
+    ----------
+    time_of_day : str or None
+        The current clock time; anything unusable is treated as neutral.
+
+    Returns
+    -------
+    float
+        A multiplier of 1.0 or above, applied to the fused base score.
+    """
     if time_of_day is None:
         return 1.0
     try:
@@ -211,6 +222,24 @@ def _time_of_day_multiplier(time_of_day: Optional[str]) -> float:
 
 
 def _trip_duration_multiplier(trip_min: Optional[int]) -> float:
+    """Amplify the base score according to how long the driver has been driving.
+
+    Time on task accumulates fatigue, so a given reading after three hours is
+    more concerning than the same reading after ten minutes. Like the circadian
+    multiplier this is context rather than evidence: it scales an existing
+    signal and cannot manufacture one, and an unusable value returns neutral.
+    All bands are tagged [ENGINEERING].
+
+    Parameters
+    ----------
+    trip_min : int or None
+        Minutes driven in this trip; anything unusable is treated as neutral.
+
+    Returns
+    -------
+    float
+        A multiplier of 1.0 or above, applied to the fused base score.
+    """
     if trip_min is None:
         return 1.0
     try:
@@ -224,9 +253,9 @@ def _trip_duration_multiplier(trip_min: Optional[int]) -> float:
 
 
 # ════════════════════════════════════════════════════════════
-#  WEIGHTS  (must sum to 1.0).  EAR no longer participates (v4 ①).
+#  WEIGHTS  (must sum to 1.0).  EAR deliberately does not participate.
 #
-#  v5: weights DERIVED VIA AHP (Analytic Hierarchy Process), the same
+#  Weights are DERIVED VIA AHP (Analytic Hierarchy Process), the same
 #  methodology Wei et al. (2023) used.  Instead of choosing weights by feel,
 #  we built a pairwise comparison matrix (Saaty 1-9 scale) with a documented
 #  justification for every entry, took its principal eigenvector, and verified
@@ -265,9 +294,9 @@ assert abs(sum(_WEIGHTS.values()) - 1.0) < 1e-9, "weights must sum to 1.0"
 # ════════════════════════════════════════════════════════════
 #  SCORE → COMMAND  (band boundaries are [ENGINEERING])
 #
-#  v5 EMERGENCY FLOOR (calibration fix):
+#  EMERGENCY FLOOR (calibration safeguard):
 #  Context multipliers (time of day, trip duration) are AMPLIFIERS, not
-#  evidence.  Before v5, a merely-moderate physiological base score could be
+#  evidence.  Without this floor a merely-moderate physiological base could be
 #  multiplied into the EMERGENCY band purely by context — e.g. PERCLOS=0.20
 #  at 03:00 after 3 h reached EMERGENCY.  EMERGENCY should mean direct, strong
 #  physiological evidence of (near) loss of consciousness, not "moderate signal
@@ -307,7 +336,7 @@ def _cognitive_state(
 ) -> str:
     """
     Derive cognitive_state from the DOMINANT signal and severity, not from a
-    hard-wired band label (v4 ③).  This is a coarse oracle label; the LLM
+    hard-wired band label.  This is a coarse oracle label; the LLM
     produces the nuanced one when it is trusted.
     """
     if command == "NO_ACTION":
@@ -395,7 +424,7 @@ def compute_reference_decision(
     combined_mult = min(t_mult * d_mult, _MAX_CONTEXT_MULTIPLIER)
     adjusted = min(base_score * combined_mult, 10.0)
 
-    # ── v5 EMERGENCY FLOOR ────────────────────────────────────────────────
+    # ── EMERGENCY FLOOR ───────────────────────────────────────────────────
     # Context alone cannot manufacture an EMERGENCY: if the unamplified
     # physiological base is below EMERGENCY_MIN_BASE, cap the amplified score
     # at the top of URGENT.  (See _SCORE_BANDS header for the rationale.)
@@ -499,6 +528,25 @@ def _apply_band_hysteresis(command: str, adjusted: float) -> tuple[str, bool]:
 
 
 def _cold_num(value, default: float = 0.0) -> float:
+    """Coerce a frame field to a float, substituting a default when it is not one.
+
+    The cold layer is the fallback the whole system relies on, so it must not be
+    the layer that raises. Missing keys, non-numeric values and NaN produced by a
+    failed landmark fit all resolve to a non-alarming default, keeping a single
+    malformed frame from either crashing the engine or inventing an alert.
+
+    Parameters
+    ----------
+    value : Any
+        The raw field taken from the frame payload.
+    default : float
+        The non-alarming value substituted when coercion is not possible.
+
+    Returns
+    -------
+    float
+        The coerced measurement, or the default.
+    """
     try:
         f = float(value)
         return f if f == f else default

@@ -28,6 +28,24 @@ class TemporalGuard:
     """
 
     def __init__(self, min_step_seconds: float = 8.0, reflex_release_seconds: float | None = None) -> None:
+        """Configure how slowly the published alert level is allowed to fall.
+
+        Only de-escalation is timed. Escalation is never delayed, because any
+        wait before raising an alert is time the driver spends unwarned.
+
+        Parameters
+        ----------
+        min_step_seconds : float
+            How long a graded alert is held before it may step down one tier.
+        reflex_release_seconds : float or None
+            How long a reflex EMERGENCY is held before releasing to current
+            truth; read from the environment when not supplied.
+
+        Returns
+        -------
+        None
+            The constructor only prepares internal state.
+        """
         self.min_step_seconds = float(min_step_seconds)
         self.reflex_release_seconds = float(
             reflex_release_seconds if reflex_release_seconds is not None
@@ -38,6 +56,26 @@ class TemporalGuard:
         self.peak_source: str = ""   # who set the level currently held
 
     def apply(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        """Smooth a proposed decision in time, letting it rise freely but not fall.
+
+        Escalation passes through untouched. A fall is treated differently
+        depending on what set the current level: a reflex microsleep was a point
+        event, so it is held briefly and then released straight to present truth,
+        while a graded alert decays one tier at a time. A reasoned one-tier drop
+        from the agent is also allowed through, since that is a judgement rather
+        than the deterministic flicker this guard exists to absorb.
+
+        Parameters
+        ----------
+        candidate : dict
+            The decision the arbiter proposes to publish on this frame.
+
+        Returns
+        -------
+        dict
+            The decision actually published, which may be the candidate, the
+            held previous level, or a single step down from it.
+        """
         now = time.monotonic()
         if self.last is None:
             self.last = dict(candidate)
@@ -106,10 +144,25 @@ def evaluate(cold: Dict[str, Any], agent: Dict[str, Any]) -> Evaluation:
               delta <= -2 -> clamp to cold - 1 (agent_under_alert_capped).
 
     Rationale: a missed detection is a crash, a false alarm is an inconvenience,
-    and the LLM is the less-reliable component — so it can lower caution only in
-    the mild band, never at URGENT/EMERGENCY. EMERGENCY is reflex-only and the
-    agent is capped to URGENT upstream (agent.py), so an EMERGENCY floor never
-    reaches this function.
+    and the LLM is the less reliable component, so it can lower caution only in
+    the mild band and never at URGENT or above. The agent itself is capped to
+    URGENT upstream in agent.py, so an EMERGENCY here always originated from a
+    deterministic layer, either the reflex latch or a cold score whose
+    unamplified base cleared the calibration floor. Such a floor is caught by
+    the same URGENT-or-above branch and held in full.
+
+    Parameters
+    ----------
+    cold : dict
+        The deterministic decision, which defines the floor for this frame.
+    agent : dict
+        The model's decision, already schema-validated and capped upstream.
+
+    Returns
+    -------
+    Evaluation
+        The decision to publish, paired with the arbitration reason that names
+        which rule applied, so the audit trail records why and not just what.
     """
     cold_rank = dec.rank(cold.get("command"))
     agent_rank = dec.rank(agent.get("command"))
