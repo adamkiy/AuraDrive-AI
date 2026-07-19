@@ -16,6 +16,7 @@ Team 26-1-D-10 · Adam Kayal & Maor Tzur · Supervisor: Mr. Ilya Zeldner
 
 ```
 phase_A/                 Phase A submission (initial prototype)
+└── src/                 the Phase A modules
 phase_B/                 Phase B, the current system
 ├── AuraDrive.command    double-click launcher for macOS
 ├── run.sh               the launcher, for macOS, Linux and Windows
