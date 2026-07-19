@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 #
-# AuraDrive (merged) — run / setup launcher
-# =========================================
-# Starts the system (python main.py) and, if needed, installs the Python
-# dependencies and makes sure a local Ollama server + model are ready.
+# AuraDrive — launcher for macOS and Linux
+# ========================================
+# Starts the system and, if needed, installs the Python dependencies and makes
+# sure a local Ollama server and model are ready. Windows users: run.bat.
+#
+# Layout this script assumes:
+#   phase_B/run.sh      this file
+#   phase_B/run.bat     the Windows equivalent
+#   phase_B/src/        the eleven modules and requirements.txt
+#   phase_B/logs/       every JSONL log the run produces
+#   phase_B/.venv/      created by --venv
 #
 # Usage:
 #   ./run.sh                 Run. Installs deps only if missing; ensures Ollama.
@@ -25,7 +32,9 @@
 # Notes:
 #   * Requires Python 3.10+ (the perception layer uses `X | None` signatures).
 #   * The script only stops an Ollama server that IT started; an already-running
-#     server (e.g. the macOS app or a systemd service) is left untouched.
+#     server (the macOS app, or a systemd service) is left untouched.
+#   * Audio: macOS uses afplay and say, both standard. On Linux no audio backend
+#     is resolved, so the system runs in full but silently and says so on stderr.
 #   * On a Jetson, MediaPipe/OpenCV may need JetPack-specific builds; if the pip
 #     install of mediapipe fails there, install the vendor wheel and re-run with
 #     --skip-ollama-style manual setup. On Apple Silicon the pip wheels work.
@@ -63,10 +72,13 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# ---------- work from the project directory ----------
-cd "$(dirname "$0")"
-[ -f main.py ] || { err "main.py not found next to this script."; exit 1; }
-[ -f requirements.txt ] || { err "requirements.txt not found."; exit 1; }
+# ---------- resolve the layout ----------
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+SRC="$ROOT/src"
+LOGS="$ROOT/logs"
+[ -f "$SRC/main.py" ]         || { err "src/main.py not found under $ROOT."; exit 1; }
+[ -f "$SRC/requirements.txt" ] || { err "src/requirements.txt not found."; exit 1; }
+mkdir -p "$LOGS"
 
 # ---------- pick a Python interpreter (>= 3.10) ----------
 pick_python() {
@@ -88,13 +100,13 @@ log "Using interpreter: $("$BASE_PY" -c 'import sys,shutil;print(shutil.which(sy
 
 # ---------- virtual environment (optional) ----------
 if [ "$USE_VENV" -eq 1 ]; then
-  if [ ! -d .venv ]; then
+  if [ ! -d "$ROOT/.venv" ]; then
     log "Creating virtualenv .venv ..."
-    "$BASE_PY" -m venv .venv
+    "$BASE_PY" -m venv "$ROOT/.venv"
     FORCE_INSTALL=1
   fi
-  PY=".venv/bin/python"
-  log "Using virtualenv .venv"
+  PY="$ROOT/.venv/bin/python"
+  log "Using virtualenv $ROOT/.venv"
 else
   PY="$BASE_PY"
 fi
@@ -119,9 +131,9 @@ PYEOF
 }
 
 _pip_install() {  # $@ -> extra pip flags
-  if ! "$PY" -m pip install "$@" -r requirements.txt; then
+  if ! "$PY" -m pip install "$@" -r "$SRC/requirements.txt"; then
     log "pip failed; retrying with --break-system-packages (PEP 668) ..."
-    "$PY" -m pip install --break-system-packages "$@" -r requirements.txt || true
+    "$PY" -m pip install --break-system-packages "$@" -r "$SRC/requirements.txt" || true
   fi
 }
 
@@ -195,6 +207,9 @@ export AURADRIVE_MODEL="$MODEL"
 export AURADRIVE_FALLBACK_MODEL="$FALLBACK_MODEL"
 export AURADRIVE_OLLAMA_URL="$OLLAMA_URL"
 export AURADRIVE_CAMERA_INDEX="$CAMERA_INDEX"
+# The agent runs as a subprocess with its own cwd, so point its log at logs/
+# explicitly; the other three follow the working directory set below.
+export AURADRIVE_AGENT_LOG="$LOGS/agent_decision_log.jsonl"
 
 # ---------- setup-only mode ----------
 if [ "$SETUP_ONLY" -eq 1 ]; then
@@ -203,9 +218,11 @@ if [ "$SETUP_ONLY" -eq 1 ]; then
 fi
 
 # ---------- run ----------
-log "Launching AuraDrive (merged). Press 'q' in the video window to quit."
+log "Launching AuraDrive. Press 'q' in the video window to quit."
+log "Logs for this session: $LOGS"
+cd "$LOGS"                     # all four JSONL logs land here
 set +e
-"$PY" main.py
+"$PY" "$SRC/main.py"
 rc=$?
 set -e
 log "AuraDrive exited (code $rc)."
