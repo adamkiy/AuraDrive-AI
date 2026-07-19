@@ -15,18 +15,75 @@ Team 26-1-D-10 · Adam Kayal & Maor Tzur · Supervisor: Mr. Ilya Zeldner
 ## Repository structure
 
 ```
-phase_A/              Phase A submission (initial prototype)
-phase_B/              Phase B, the current system
-├── run.sh            launcher for macOS and Linux
-├── run.bat           launcher for Windows 10/11
-├── src/              the eleven modules and requirements.txt
-└── logs/sample/      recorded JSONL logs backing the measured results
+phase_A/                 Phase A submission (initial prototype)
+phase_B/                 Phase B, the current system
+├── AuraDrive.command    double-click launcher for macOS
+├── run.sh               command-line launcher for macOS and Linux
+├── run.bat              command-line launcher for Windows 10/11
+├── src/                 the eleven modules and requirements.txt
+└── logs/sample/         recorded JSONL logs backing the measured results
 ```
 
-## Running it
+## Quick start on macOS
 
-One launcher does everything: it installs the Python dependencies, makes
-sure a local Ollama server and model are ready, then starts the monitor.
+Open the `phase_B` folder in Finder and double-click **AuraDrive.command**.
+
+That is the whole procedure. The shortcut opens a Terminal window, and on a
+machine that has never run AuraDrive it performs the first-time setup by
+itself: it creates an isolated Python environment, installs the dependencies,
+starts a local Ollama server if one is not already running, and downloads the
+reasoning model. That download is roughly 1.3 GB and happens only once. Later
+launches skip all of it and start in seconds.
+
+Press `q` in the video window to end a session.
+
+### Two things macOS will ask for
+
+**The camera.** The first launch triggers a camera permission prompt for
+Terminal. If it is dismissed, the system starts and then fails to open the
+camera. Grant it under System Settings → Privacy & Security → Camera, then
+launch again.
+
+**Gatekeeper.** A copy of this repository that arrived as a downloaded ZIP is
+quarantined, and double-clicking may be refused with a warning about an
+unidentified developer. Right-click the file and choose **Open** instead, which
+offers the option to run it anyway. A repository obtained with `git clone` is
+not quarantined and does not have this problem.
+
+### If double-clicking does nothing
+
+The executable bit does not survive a ZIP download. One command restores it:
+
+```bash
+chmod +x ~/Desktop/AuraDrive-repo/phase_B/AuraDrive.command
+```
+
+The shortcut repairs `run.sh` the same way on its own, so this only ever needs
+doing for the `.command` file itself.
+
+## Moving or renaming the project folder
+
+The launchers resolve their own location at startup, so the repository can sit
+anywhere and can be renamed freely. `AuraDrive.command`, `run.sh` and `run.bat`
+all work from any path, and none of them depend on the folder being called
+`AuraDrive-repo` or living on the Desktop.
+
+One rule makes that true: **keep the launchers next to `src/`.** Moving
+`AuraDrive.command` on its own, for example onto the Desktop or into the Dock,
+breaks it, because it looks for `run.sh` beside itself. To launch from
+somewhere convenient, make an alias rather than a copy: right-click the file,
+choose Make Alias, and move the alias wherever you like. An alias keeps
+pointing at the original.
+
+Note that an IDE is a separate matter. PyCharm stores an absolute interpreter
+path in its own settings, so moving the folder will break the configured
+interpreter there even though the launchers still work. Re-select the
+interpreter at `phase_B/.venv/bin/python` if that happens.
+
+## Running from the command line
+
+The shortcut is a wrapper around `run.sh`, so anything it does can be done
+directly.
 
 **macOS and Linux**
 
@@ -44,13 +101,18 @@ run.bat --venv
 run.bat
 ```
 
-Both accept `--setup` (prepare only), `--install` (force a dependency
-reinstall), `--skip-ollama` (run the deterministic layer alone) and
-`--help`. Press `q` in the video window to stop a session.
+Both accept the same flags:
+
+| Flag | Effect |
+|---|---|
+| `--venv` | Create and use an isolated `.venv` |
+| `--setup` | Prepare dependencies and model, then exit without launching |
+| `--install` | Force a dependency reinstall |
+| `--skip-ollama` | Run the deterministic layer alone, without the model |
+| `--help` | Show the full usage text |
 
 Requires Python 3.10 or newer, a driver-facing camera, and
-[Ollama](https://ollama.com/download). The model is pulled automatically on
-first run, a one-time download of roughly 1.3 GB.
+[Ollama](https://ollama.com/download).
 
 ## How it works
 
@@ -72,6 +134,15 @@ language model is never allowed to weaken a high-risk deterministic verdict.
 Measured on the development laptop: perception sustains 30.3 FPS while a
 single agent inference takes a median of 11.7 seconds, and the camera loop is
 never blocked. The raw records are in `phase_B/logs/sample/`.
+
+## Where the logs go
+
+Each session writes four JSONL files to `phase_B/logs/`: every frame's metrics,
+each model call and its result, the frame-by-frame agent rendezvous, and the
+audit trail of decisions actually shown to the driver. They are ignored by git,
+since a long session produces a large sensor log. A trimmed sample of each is
+committed under `logs/sample/` as the evidence behind the measured figures
+above.
 
 ## Configuration
 
