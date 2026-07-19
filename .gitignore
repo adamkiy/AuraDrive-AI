@@ -1,4 +1,26 @@
+# Python
 __pycache__/
 *.pyc
-conversation_log.jsonl
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and OS
+.idea/
+.vscode/
 .DS_Store
+Thumbs.db
+
+# Runtime logs. A trimmed sample of each is committed under
+# phase_B/logs/sample/ and backs the measured figures in Table 7 of the book.
+phase_B/logs/*.jsonl
+conversation_log.jsonl
+
+# Word lock files
+~$*.docx
+
+# Book drafts. Commit the final one deliberately, under a clear name.
+*.docx
