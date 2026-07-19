@@ -48,6 +48,15 @@ set "FORCE_INSTALL=0"
 set "SETUP_ONLY=0"
 set "MANAGE_OLLAMA=1"
 
+rem ---------- was this double-clicked in Explorer? ----------
+rem Explorer launches a .bat through "cmd /c", which also closes the window the
+rem moment the script ends. Detecting that lets the failure path pause, and lets
+rem a double-click default to an isolated environment, matching what
+rem AuraDrive.command does on macOS. A run from an existing prompt is untouched.
+set "DOUBLE_CLICK=0"
+echo %cmdcmdline% | find /i "/c" >nul && set "DOUBLE_CLICK=1"
+if "%DOUBLE_CLICK%"=="1" if "%~1"=="" set "USE_VENV=1"
+
 rem ---------- arg parsing ----------
 :parse
 if "%~1"=="" goto parsed
@@ -90,18 +99,39 @@ if not defined BASE_PY (
 )
 echo [run] Using interpreter: %BASE_PY%
 
-rem ---------- virtual environment (optional) ----------
-if "%USE_VENV%"=="1" (
-    if not exist "%ROOT%\.venv" (
-        echo [run] Creating virtualenv .venv ...
-        %BASE_PY% -m venv "%ROOT%\.venv" || goto :die
-        set "FORCE_INSTALL=1"
-    )
-    set "PY=%ROOT%\.venv\Scripts\python.exe"
-    echo [run] Using virtualenv %ROOT%\.venv
-) else (
-    set "PY=%BASE_PY%"
-)
+rem ---------- virtual environment ----------
+rem An existing .venv is used whichever way the script was invoked. Ignoring one
+rem that is already provisioned, merely because a flag was omitted, would send
+rem pip at the system interpreter instead. --venv therefore means "create one if
+rem it is missing". AURADRIVE_PYTHON overrides everything.
+rem Kept as flat statements rather than nested blocks: %VAR% inside a
+rem parenthesised block expands when the block is parsed, not when it runs.
+set "PY="
+if defined AURADRIVE_PYTHON goto venv_explicit
+if exist "%ROOT%\.venv\Scripts\python.exe" goto venv_existing
+if "%USE_VENV%"=="1" goto venv_create
+set "PY=%BASE_PY%"
+echo [run] No .venv present; using the system interpreter. Use --venv for an isolated one.
+goto venv_done
+
+:venv_explicit
+set "PY=%BASE_PY%"
+echo [run] Using the interpreter from AURADRIVE_PYTHON (ignoring any .venv).
+goto venv_done
+
+:venv_existing
+set "PY=%ROOT%\.venv\Scripts\python.exe"
+echo [run] Using existing virtualenv %ROOT%\.venv
+goto venv_done
+
+:venv_create
+echo [run] Creating virtualenv .venv ...
+%BASE_PY% -m venv "%ROOT%\.venv" || goto :die
+set "FORCE_INSTALL=1"
+set "PY=%ROOT%\.venv\Scripts\python.exe"
+echo [run] Using virtualenv %ROOT%\.venv
+
+:venv_done
 
 rem ---------- Python dependencies ----------
 rem Functional check, not a presence check: mediapipe can import successfully
@@ -212,7 +242,7 @@ rem closes the window the moment the script ends and takes the error message
 rem with it. A run from an existing prompt has no such problem and must not be
 rem left waiting for a keypress, which would break scripted use.
 if "%~1"=="0" exit /b 0
-echo %cmdcmdline% | find /i "/c" >nul || exit /b 0
+if not "%DOUBLE_CLICK%"=="1" exit /b 0
 echo.
 echo Press any key to close this window.
 pause >nul

@@ -24,18 +24,27 @@ phase_B/                 Phase B, the current system
 └── logs/sample/         recorded JSONL logs backing the measured results
 ```
 
-## Quick start on macOS
+## Quick start
 
-Open the `phase_B` folder in Finder and double-click **AuraDrive.command**.
+Before anything else, install [Python 3.10 or newer](https://www.python.org/downloads/)
+and [Ollama](https://ollama.com/download), and make sure a camera is connected.
+Everything else is automatic.
 
-That is the whole procedure. The shortcut opens a Terminal window, and on a
-machine that has never run AuraDrive it performs the first-time setup by
-itself: it creates an isolated Python environment, installs the dependencies,
-starts a local Ollama server if one is not already running, and downloads the
-reasoning model. That download is roughly 1.3 GB and happens only once. Later
-launches skip all of it and start in seconds.
+**Windows 10/11** — open the `phase_B` folder and double-click **run.bat**.
+
+**macOS** — open the `phase_B` folder and double-click **AuraDrive.command**.
+
+That is the whole procedure on either platform. A console window opens, and on
+a machine that has never run AuraDrive the launcher performs the first-time
+setup by itself: it creates an isolated Python environment, installs the
+dependencies, starts a local Ollama server if one is not already running, and
+downloads the reasoning model. That download is roughly 1.3 GB and happens only
+once. Later launches skip all of it and start in seconds.
 
 Press `q` in the video window to end a session.
+
+If the window closes too quickly to read an error, run the launcher from a
+terminal instead, as shown further down, and the output stays on screen.
 
 ### Two things macOS will ask for
 
@@ -52,7 +61,8 @@ not quarantined and does not have this problem.
 
 ### If double-clicking does nothing
 
-The executable bit does not survive a ZIP download. One command restores it:
+On **macOS**, the executable bit does not survive a ZIP download. One command
+restores it:
 
 ```bash
 chmod +x ~/Desktop/AuraDrive-repo/phase_B/AuraDrive.command
@@ -60,6 +70,18 @@ chmod +x ~/Desktop/AuraDrive-repo/phase_B/AuraDrive.command
 
 The shortcut repairs `run.sh` the same way on its own, so this only ever needs
 doing for the `.command` file itself.
+
+On **Windows**, a `.bat` from a downloaded ZIP may be blocked by SmartScreen.
+Right-click the file, choose Properties, tick **Unblock** at the bottom, and
+apply. A repository obtained with `git clone` is not blocked.
+
+### Windows notes
+
+Alert tones use `winsound` and speech uses PowerShell with System.Speech. Both
+ship with the operating system, so there is nothing extra to install for audio.
+
+The camera is claimed exclusively while a session runs, so close Teams, Zoom or
+the Camera app first; otherwise OpenCV fails to open the device.
 
 ## Moving or renaming the project folder
 
@@ -113,6 +135,23 @@ Both accept the same flags:
 
 Requires Python 3.10 or newer, a driver-facing camera, and
 [Ollama](https://ollama.com/download).
+
+An existing `.venv` beside the launcher is used automatically, so `--venv` only
+ever matters on a machine that does not have one yet. Setting
+`AURADRIVE_PYTHON` overrides the choice of interpreter entirely.
+
+### Checking a machine before a demonstration
+
+`--setup` prepares everything and exits without opening the camera, which is
+the safe way to confirm a new machine is ready:
+
+```bash
+./run.sh --setup      # run.bat --setup on Windows
+```
+
+It installs the dependencies, verifies that MediaPipe is genuinely functional
+rather than merely importable, and pulls the model if it is absent. Running it
+in advance means the 1.3 GB download cannot surprise anyone mid-demonstration.
 
 ## How it works
 
