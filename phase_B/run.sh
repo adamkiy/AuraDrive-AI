@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 #
 # AuraDrive — launcher
-# ========================================
+# ====================
 # Starts the system and, if needed, installs the Python dependencies and makes
-# sure a local Ollama server and model are ready.
+# sure a local Ollama server and model are ready. This is the launcher for every
+# platform: macOS and Linux directly, Windows under Git Bash or WSL. The one
+# thing that differs between them is where a virtualenv keeps its interpreter,
+# and that is detected below rather than assumed.
 #
 # Layout this script assumes:
-#   phase_B/run.sh            this file, the launcher for every platform
-#   phase_B/AuraDrive.command a macOS wrapper so Finder has something to open
-#   phase_B/src/              the eleven modules and requirements.txt
-#   phase_B/logs/       every JSONL log the run produces
-#   phase_B/.venv/      created by --venv
+#   phase_B/run.sh             this file
+#   phase_B/AuraDrive.command  a macOS wrapper so Finder has something to open
+#   phase_B/src/               the eleven modules and requirements.txt
+#   phase_B/logs/              every JSONL log the run produces
+#   phase_B/.venv/             created by --venv
 #
 # Usage:
 #   ./run.sh                 Run. Installs deps only if missing; ensures Ollama.
@@ -33,7 +36,8 @@
 #   * Requires Python 3.10+ (the perception layer uses `X | None` signatures).
 #   * The script only stops an Ollama server that IT started; an already-running
 #     server (the macOS app, or a systemd service) is left untouched.
-#   * Audio: macOS uses afplay and say, both standard. On Linux no audio backend
+#   * Audio: macOS uses afplay and say, Windows uses winsound and PowerShell
+#     System.Speech, all of them standard on their platform. On Linux no backend
 #     is resolved, so the system runs in full but silently and says so on stderr.
 #   * On a Jetson, MediaPipe/OpenCV may need JetPack-specific builds; if the pip
 #     install of mediapipe fails there, install the vendor wheel and re-run with
@@ -104,10 +108,7 @@ log "Using interpreter: $("$BASE_PY" -c 'import sys,shutil;print(shutil.which(sy
 # flag was omitted would send pip at the system interpreter instead. --venv
 # therefore means "create one if it is missing", not "use the one that exists".
 # Setting AURADRIVE_PYTHON explicitly overrides this and wins.
-# A virtualenv puts its interpreter in bin/ on Unix and in Scripts/ on Windows.
-# Under Git Bash or WSL this script runs on Windows, so the layout is resolved
-# by looking rather than by assuming.
-venv_python() {
+venv_python() {   # bin/ on Unix, Scripts/ on Windows; look rather than assume
   if [ -x "$1/bin/python" ]; then
     echo "$1/bin/python"
   elif [ -x "$1/Scripts/python.exe" ]; then
