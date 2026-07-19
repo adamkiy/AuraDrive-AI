@@ -28,11 +28,39 @@ phase_B/                 Phase B, the current system
 └── logs/sample/         recorded JSONL logs backing the measured results
 ```
 
+## Requirements
+
+| | Needed | Notes |
+|---|---|---|
+| Python | 3.10 or newer | The perception layer uses `X \| None` signatures |
+| Ollama | **0.5 or newer** | See the warning below; older versions fail silently |
+| Model | `llama3.2:1b` | Pulled automatically on first run, about 1.3 GB |
+| Camera | Any, facing the driver | Held exclusively during a session |
+| Disk | ~2 GB | Model, plus the Python environment |
+| RAM | A few GB free | The model stays resident for ten minutes after each call |
+| Windows only | Git Bash or WSL | `cmd.exe` and PowerShell cannot run a shell script |
+
+The three Python packages are listed in `phase_B/src/requirements.txt` and the
+launcher installs them. Ollama and the model are not pip packages; the launcher
+checks for them and pulls the model, but Ollama itself must be installed first
+from [ollama.com/download](https://ollama.com/download).
+
+> **The Ollama version matters, and getting it wrong is not obvious.** The agent
+> sends a JSON Schema in the request's `format` field, which is Ollama's
+> structured outputs feature, introduced in version 0.5. On an older Ollama the
+> schema is ignored, every reply fails validation, and the agent falls back to
+> the deterministic layer on every single frame. Nothing crashes and alerts keep
+> firing, so the system looks healthy while the reasoning layer contributes
+> nothing at all. Check with `ollama --version` before assuming the agent is
+> broken.
+
+The fallback model `llama3.2:latest`, the 3B, is used when the 1B is not
+installed. The measured agent latency reported below was recorded on that
+fallback; the 1B is faster.
+
 ## Quick start
 
-Before anything else, install [Python 3.10 or newer](https://www.python.org/downloads/)
-and [Ollama](https://ollama.com/download), and make sure a camera is connected.
-Everything else is automatic.
+With Python, Ollama and a camera in place, everything else is automatic.
 
 **macOS** — open the `phase_B` folder and double-click **AuraDrive.command**.
 
@@ -134,9 +162,6 @@ The flags are:
 | `--install` | Force a dependency reinstall |
 | `--skip-ollama` | Run the deterministic layer alone, without the model |
 | `--help` | Show the full usage text |
-
-Requires Python 3.10 or newer, a driver-facing camera, and
-[Ollama](https://ollama.com/download).
 
 An existing `.venv` beside the launcher is used automatically, so `--venv` only
 ever matters on a machine that does not have one yet. Setting

@@ -1,3 +1,28 @@
+# Python packages, installed by the launcher with:  pip install -r requirements.txt
 opencv-python>=4.8.0
 mediapipe==0.10.21
 numpy>=1.24.0
+
+# ---------------------------------------------------------------------------
+# Not installable with pip. These are the rest of the dependency set; the
+# launcher checks for them rather than installing them.
+#
+#   Python  >= 3.10          the perception layer uses `X | None` signatures
+#
+#   Ollama  >= 0.5           https://ollama.com/download
+#       The agent passes a JSON Schema in the request's `format` field, which
+#       is Ollama's structured outputs feature and arrived in 0.5. On anything
+#       older the schema is not honoured, every reply fails validation, and the
+#       agent falls back to the deterministic layer on every frame. The system
+#       keeps running and keeps alerting, so this failure is silent: check the
+#       Ollama version before concluding the reasoning layer is broken.
+#
+#   Model   llama3.2:1b      pulled automatically on first run, about 1.3 GB
+#           llama3.2:latest  the 3B fallback, used when the 1B is absent
+#       Whichever is loaded stays resident for ten minutes after a call
+#       (AURADRIVE_KEEP_ALIVE), so allow a few GB of free RAM alongside the
+#       8192-token context the agent requests.
+#
+# Windows also needs Git Bash or WSL to run the launcher; cmd.exe and
+# PowerShell cannot execute a shell script.
+# ---------------------------------------------------------------------------

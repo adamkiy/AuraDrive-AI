@@ -33,7 +33,9 @@
 #   AURADRIVE_PYTHON          python interpreter (default: first python3 >= 3.10)
 #
 # Notes:
-#   * Requires Python 3.10+ (the perception layer uses `X | None` signatures).
+#   * Requires Python 3.10+ (the perception layer uses `X | None` signatures)
+#     and Ollama 0.5+ (the agent sends a JSON Schema, which needs structured
+#     outputs). The full dependency set is documented in src/requirements.txt.
 #   * The script only stops an Ollama server that IT started; an already-running
 #     server (the macOS app, or a systemd service) is left untouched.
 #   * Audio: macOS uses afplay and say, Windows uses winsound and PowerShell
@@ -212,6 +214,23 @@ if [ "$MANAGE_OLLAMA" -eq 1 ]; then
     for _ in $(seq 1 30); do ollama_up && break; sleep 1; done
     ollama_up || { err "Ollama did not become ready (see /tmp/auradrive_ollama.log)."; exit 1; }
     log "Ollama server is up."
+  fi
+
+  # Structured outputs, which the agent depends on, arrived in Ollama 0.5. On
+  # anything older the JSON Schema in the request is ignored, every reply fails
+  # validation and the agent falls back to the cold layer on every frame. That
+  # is invisible from the outside, so say it loudly here rather than let the
+  # reasoning layer quietly contribute nothing.
+  ver="$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
+  if [ -n "$ver" ]; then
+    major="${ver%%.*}"; rest="${ver#*.}"; minor="${rest%%.*}"
+    if [ "$major" -eq 0 ] && [ "$minor" -lt 5 ] 2>/dev/null; then
+      err "Ollama $ver is too old: the agent needs structured outputs, added in 0.5."
+      err "The system will run, but every model reply will fail validation and the"
+      err "reasoning layer will contribute nothing. Update from https://ollama.com/download"
+    else
+      log "Ollama version $ver."
+    fi
   fi
 
   if model_present "$MODEL" || model_present "$FALLBACK_MODEL"; then
