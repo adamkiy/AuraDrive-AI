@@ -98,17 +98,27 @@ BASE_PY="$(pick_python)" || {
 }
 log "Using interpreter: $("$BASE_PY" -c 'import sys,shutil;print(shutil.which(sys.executable) or sys.executable, sys.version.split()[0])')"
 
-# ---------- virtual environment (optional) ----------
-if [ "$USE_VENV" -eq 1 ]; then
-  if [ ! -d "$ROOT/.venv" ]; then
-    log "Creating virtualenv .venv ..."
-    "$BASE_PY" -m venv "$ROOT/.venv"
-    FORCE_INSTALL=1
-  fi
+# ---------- virtual environment ----------
+# An existing .venv is used automatically. Anything else would be a trap: the
+# environment sits right here, already provisioned, and ignoring it because a
+# flag was omitted would send pip at the system interpreter instead. --venv
+# therefore means "create one if it is missing", not "use the one that exists".
+# Setting AURADRIVE_PYTHON explicitly overrides this and wins.
+if [ -n "${AURADRIVE_PYTHON:-}" ]; then
+  PY="$BASE_PY"
+  log "Using the interpreter from AURADRIVE_PYTHON (ignoring any .venv)."
+elif [ -d "$ROOT/.venv" ]; then
+  PY="$ROOT/.venv/bin/python"
+  log "Using existing virtualenv $ROOT/.venv"
+elif [ "$USE_VENV" -eq 1 ]; then
+  log "Creating virtualenv .venv ..."
+  "$BASE_PY" -m venv "$ROOT/.venv"
+  FORCE_INSTALL=1
   PY="$ROOT/.venv/bin/python"
   log "Using virtualenv $ROOT/.venv"
 else
   PY="$BASE_PY"
+  log "No .venv present; using the system interpreter. Run with --venv for an isolated one."
 fi
 
 # ---------- Python dependencies ----------

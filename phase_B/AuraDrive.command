@@ -41,15 +41,15 @@ echo "AuraDrive"
 echo "Project folder: $HERE"
 echo
 
-# First run needs the isolated environment and the one-time model download;
-# after that .venv exists and the normal path is much faster.
-if [ -d .venv ]; then
-    ./run.sh "$@"
-else
-    echo "No .venv found: running first-time setup (this downloads the model once)."
+# --venv either way: run.sh reuses an existing environment and creates one only
+# when it is missing. The message is the only thing that differs, since the
+# first run also downloads the model.
+if [ ! -d .venv ]; then
+    echo "First run: setting up the environment and downloading the model."
+    echo "This takes a few minutes once, then later launches start in seconds."
     echo
-    ./run.sh --venv "$@"
 fi
+./run.sh --venv "$@"
 
 status=$?
 echo
