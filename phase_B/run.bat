@@ -58,7 +58,7 @@ if /I "%~1"=="--skip-ollama" set "MANAGE_OLLAMA=0"   & shift & goto parse
 if /I "%~1"=="--help"        goto help
 if /I "%~1"=="-h"            goto help
 echo [run][ERROR] Unknown option: %~1 (try --help) 1>&2
-exit /b 2
+goto :die2
 :parsed
 
 rem ---------- resolve the layout ----------
@@ -69,11 +69,11 @@ set "LOGS=%ROOT%\logs"
 
 if not exist "%SRC%\main.py" (
     echo [run][ERROR] src\main.py not found under %ROOT%. 1>&2
-    exit /b 1
+    goto :die
 )
 if not exist "%SRC%\requirements.txt" (
     echo [run][ERROR] src\requirements.txt not found. 1>&2
-    exit /b 1
+    goto :die
 )
 if not exist "%LOGS%" mkdir "%LOGS%"
 
@@ -86,7 +86,7 @@ if not defined BASE_PY      call :try_py "python3"
 if not defined BASE_PY (
     echo [run][ERROR] Need Python 3.10+ on PATH. Install from python.org, or set 1>&2
     echo [run][ERROR] AURADRIVE_PYTHON to point at a suitable interpreter. 1>&2
-    exit /b 1
+    goto :die
 )
 echo [run] Using interpreter: %BASE_PY%
 
@@ -94,7 +94,7 @@ rem ---------- virtual environment (optional) ----------
 if "%USE_VENV%"=="1" (
     if not exist "%ROOT%\.venv" (
         echo [run] Creating virtualenv .venv ...
-        %BASE_PY% -m venv "%ROOT%\.venv" || exit /b 1
+        %BASE_PY% -m venv "%ROOT%\.venv" || goto :die
         set "FORCE_INSTALL=1"
     )
     set "PY=%ROOT%\.venv\Scripts\python.exe"
@@ -119,7 +119,7 @@ echo [run] Still not functional - forcing a clean reinstall ...
 call :deps_ok && goto deps_done
 echo [run][ERROR] MediaPipe/OpenCV are installed but NOT functional in this interpreter. 1>&2
 echo [run][ERROR] Most reliable fix: run.bat --venv 1>&2
-exit /b 1
+goto :die
 
 :deps_done
 echo [run] Dependencies functional.
@@ -136,7 +136,7 @@ if errorlevel 1 (
     echo [run][ERROR] Ollama is not installed - the LLM agent layer needs it. 1>&2
     echo [run][ERROR] Install from https://ollama.com/download, then re-run. 1>&2
     echo [run][ERROR] (Or re-run with --skip-ollama for the deterministic layer only.) 1>&2
-    exit /b 1
+    goto :die
 )
 
 ollama list >nul 2>&1
@@ -148,7 +148,7 @@ if errorlevel 1 (
         ollama list >nul 2>&1 && goto ollama_up
     )
     echo [run][ERROR] Ollama did not become ready. 1>&2
-    exit /b 1
+    goto :die
 ) else (
     echo [run] Ollama server already running.
 )
@@ -163,7 +163,7 @@ if "%MODEL_FOUND%"=="1" (
     echo [run] Model available (%AURADRIVE_MODEL% or %AURADRIVE_FALLBACK_MODEL%).
 ) else (
     echo [run] No model found; pulling '%AURADRIVE_MODEL%' (one-time, ~1.3 GB) ...
-    ollama pull "%AURADRIVE_MODEL%" || exit /b 1
+    ollama pull "%AURADRIVE_MODEL%" || goto :die
 )
 :ollama_done
 
@@ -184,6 +184,7 @@ pushd "%LOGS%"
 set "RC=%ERRORLEVEL%"
 popd
 echo [run] AuraDrive exited (code %RC%).
+call :hold %RC%
 exit /b %RC%
 
 rem ---------- subroutines ----------
@@ -195,6 +196,27 @@ exit /b 0
 :deps_ok
 %PY% -c "import numpy, cv2, mediapipe as mp; mp.solutions.face_mesh" >nul 2>&1
 exit /b %ERRORLEVEL%
+
+:die
+call :hold 1
+exit /b 1
+
+:die2
+call :hold 1
+exit /b 2
+
+:hold
+rem Hold the console open after a failure, but only when this file was started
+rem by double-clicking it. Explorer launches a .bat through "cmd /c", which
+rem closes the window the moment the script ends and takes the error message
+rem with it. A run from an existing prompt has no such problem and must not be
+rem left waiting for a keypress, which would break scripted use.
+if "%~1"=="0" exit /b 0
+echo %cmdcmdline% | find /i "/c" >nul || exit /b 0
+echo.
+echo Press any key to close this window.
+pause >nul
+exit /b 0
 
 :help
 echo.
