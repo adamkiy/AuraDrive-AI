@@ -8,16 +8,20 @@ language model all run on the in-vehicle unit.
 Braude College of Engineering — Final Project 2026
 Team 26-1-D-10 · Adam Kayal & Maor Tzur · Supervisor: Mr. Ilya Zeldner
 
-## Demo video
+## Deliverables
 
-[Watch the demo](https://drive.google.com/file/d/1baDizSanrvPVadC55TprDTa3OGW5xCEn/view?usp=sharing)
+- [Demo video](https://drive.google.com/file/d/1baDizSanrvPVadC55TprDTa3OGW5xCEn/view?usp=sharing)
+- [Project book](phase_B/AuraDrive_26-1-D-10_PHASE_B.docx), the full Phase B report
+- [Poster](Poster_AuraDrive_26-1-D-10.pdf)
 
 ## Repository structure
 
 ```
+Poster_AuraDrive_26-1-D-10.pdf   the project poster
 phase_A/                 Phase A submission (initial prototype)
 └── src/                 the Phase A modules
 phase_B/                 Phase B, the current system
+├── AuraDrive_26-1-D-10_PHASE_B.docx   the project book
 ├── AuraDrive.command    double-click launcher for macOS
 ├── run.sh               the launcher, for macOS, Linux and Windows
 ├── src/                 the eleven modules and requirements.txt
